@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Web SIP Phone",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WebRTC SIP phone connection indicator. Registers your SIP extension over WSS and shows live status: ready, busy, or offline.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "offscreen", "scripting", "tabs"],
