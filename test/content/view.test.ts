@@ -123,10 +123,11 @@ describe("status dot colors", () => {
     expect(statusDot().className).toContain("status-off");
   });
 
-  it("shows pulsing red while connecting", () => {
+  it("shows pulsing amber while connecting (never red, which reads as failure)", () => {
     view.update({ ...READY, runtime: RuntimeState.Connecting });
-    expect(statusDot().className).toContain("status-off");
+    expect(statusDot().className).toContain("status-busy");
     expect(statusDot().className).toContain("status-pulse");
+    expect(statusDot().className).not.toContain("status-off");
   });
 
   it("renders the phone icon inside the button", () => {

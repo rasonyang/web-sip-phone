@@ -87,8 +87,10 @@ function statusFor(state: DisplayState): StatusView {
   if (state.error) {
     return { cls: "status-off", pulse: false, label: ERROR_COPY[state.error].title };
   }
+  // Amber pulse = transitional (connecting/reconnecting); solid red is reserved for
+  // hard failure states so a blink is never mistaken for "failed".
   if (state.reconnecting) {
-    return { cls: "status-off", pulse: true, label: "Reconnecting…" };
+    return { cls: "status-busy", pulse: true, label: "Reconnecting…" };
   }
   switch (state.runtime) {
     case RuntimeState.Ready:
@@ -97,7 +99,7 @@ function statusFor(state: DisplayState): StatusView {
         : { cls: "status-ok", pulse: false, label: "Ready" };
     case RuntimeState.Connecting:
     case RuntimeState.Registering:
-      return { cls: "status-off", pulse: true, label: "Connecting…" };
+      return { cls: "status-busy", pulse: true, label: "Connecting…" };
     default:
       return { cls: "status-off", pulse: false, label: "Not connected" };
   }

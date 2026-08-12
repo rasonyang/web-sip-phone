@@ -4,8 +4,8 @@ A Chrome extension that maintains a WebRTC SIP voice link and shows a small drag
 icon** with a status dot (top-right corner) on configured business pages:
 
 - 🟢 **green** — registered and ready
-- 🟡 **amber** — a call is in progress
-- 🔴 **red** — not connected (blinking while connecting/reconnecting)
+- 🟡 **amber** — a call is in progress (solid), or connecting/reconnecting (blinking)
+- 🔴 **red** — not connected / failed
 
 The widget follows the shadcn/ui neutral look (Inter, lucide-style icon) so it blends into
 shadcn-based host applications. It is **not** a softphone: all call control (dial, answer, hangup,
