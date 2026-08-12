@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Web SIP Phone Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon-48.png" alt="" width="24" height="24" />
+      <h1>Web SIP Phone</h1>
+      <nav>
+        <button data-section="account" class="active">Account</button>
+        <button data-section="sites">Allow Sites</button>
+        <button data-section="advanced">Advanced</button>
+        <button data-section="about">About</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="section-account">
+        <h2>Account</h2>
+        <p class="hint">Enter the hostname only — no sip:, wss://, port, or path.</p>
+        <label>Domain <input id="acc-domain" placeholder="voice.example.com" autocomplete="off" /></label>
+        <label>Account <input id="acc-username" placeholder="1001" autocomplete="off" /></label>
+        <label>Password
+          <span class="pw-wrap">
+            <input id="acc-password" type="password" autocomplete="off" />
+            <button id="acc-pw-toggle" type="button" aria-label="Show password">👁</button>
+          </span>
+        </label>
+        <p id="acc-status" class="status" role="status"></p>
+        <div class="actions">
+          <button id="acc-save">Save</button>
+          <button id="acc-signout" class="danger">Sign Out / Clear Account</button>
+        </div>
+        <p class="hint">Saving does not connect. Web SIP Phone registers automatically when an Allow Site page is open.</p>
+      </section>
+
+      <section id="section-sites" hidden>
+        <h2>Allow Sites</h2>
+        <p class="hint">Exact hostname match, HTTPS only. Subdomains are not included automatically.</p>
+        <div class="site-add">
+          <input id="site-input" placeholder="crm.example.com" autocomplete="off" />
+          <button id="site-add">Add</button>
+        </div>
+        <p id="site-error" class="error" role="alert"></p>
+        <ul id="site-list"></ul>
+      </section>
+
+      <section id="section-advanced" hidden>
+        <h2>Advanced</h2>
+        <h3>Microphone</h3>
+        <p class="hint">Web SIP Phone needs microphone access to carry call audio.</p>
+        <button id="mic-test">Test microphone</button>
+        <p id="mic-status" class="status" role="status"></p>
+        <h3>TURN</h3>
+        <p class="hint">Default STUN: stun:stun.l.google.com:19302. Configure TURN only if calls fail to carry audio. Changes affect subsequent calls only.</p>
+        <label class="check"><input id="turn-enabled" type="checkbox" /> Enable TURN</label>
+        <label>TURN URL <input id="turn-url" placeholder="turn:turn.example.com:3478" autocomplete="off" /></label>
+        <label>TURN Username <input id="turn-username" autocomplete="off" /></label>
+        <label>TURN Credential
+          <span class="pw-wrap">
+            <input id="turn-credential" type="password" autocomplete="off" />
+            <button id="turn-cred-toggle" type="button" aria-label="Show credential">👁</button>
+          </span>
+        </label>
+        <div class="actions"><button id="turn-save">Save TURN Settings</button></div>
+      </section>
+
+      <section id="section-about" hidden>
+        <h2>About</h2>
+        <p><strong>Web SIP Phone</strong> — version <span id="about-version"></span></p>
+        <p>A voice connection status indicator for FreeSWITCH-controlled WebRTC calls. Web SIP Phone handles SIP registration and audio; your business page's softphone bar owns all call information and controls.</p>
+        <p>SIP.js build: <code id="about-sipjs"></code></p>
+        <p><a id="about-privacy" href="https://example.invalid/privacy" target="_blank" rel="noreferrer">Privacy Policy</a></p>
+      </section>
+    </main>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

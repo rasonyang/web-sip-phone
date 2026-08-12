@@ -1,0 +1,23 @@
+{
+  "name": "web-sip-phone",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "gen-icons": "node scripts/gen-icons.mjs",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "sip.js": "github:rasonyang/SIP.js#a77d76360663d5b0a5145b1ceaeebbaa9b51f7db"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "esbuild": "^0.23.0",
+    "jsdom": "^24.1.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
