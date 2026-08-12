@@ -103,7 +103,7 @@ describe("panelOpen does not leak across the error boundary", () => {
   });
 });
 
-describe("status dot colors", () => {
+describe("connection dot (health channel)", () => {
   const statusDot = () => root().querySelector("[data-role=status-dot]") as HTMLElement;
 
   it("shows green when registered and idle", () => {
@@ -111,28 +111,54 @@ describe("status dot colors", () => {
     expect(statusDot().className).toContain("status-ok");
   });
 
-  it("shows amber while a call is in progress", () => {
+  it("stays green during a call — call activity never touches the dot", () => {
     view.update({ ...READY, busy: true });
-    expect(statusDot().className).toContain("status-busy");
-    const dot = root().querySelector("[data-role=dot]") as HTMLElement;
-    expect(dot.getAttribute("aria-label")).toContain("On a call");
+    expect(statusDot().className).toContain("status-ok");
+    expect(statusDot().className).not.toContain("status-warn");
   });
 
   it("shows red when not connected", () => {
     view.update({ ...READY, runtime: RuntimeState.InactiveNoAllowedSite });
-    expect(statusDot().className).toContain("status-off");
+    expect(statusDot().className).toContain("status-err");
   });
 
   it("shows pulsing amber while connecting (never red, which reads as failure)", () => {
     view.update({ ...READY, runtime: RuntimeState.Connecting });
-    expect(statusDot().className).toContain("status-busy");
+    expect(statusDot().className).toContain("status-warn");
     expect(statusDot().className).toContain("status-pulse");
-    expect(statusDot().className).not.toContain("status-off");
+    expect(statusDot().className).not.toContain("status-err");
+  });
+});
+
+describe("call activity (button channel)", () => {
+  const button = () => root().querySelector("[data-role=dot]") as HTMLElement;
+
+  it("shows the desk-phone icon on a plain white button when idle", () => {
+    view.update(READY);
+    expect(button().className).not.toContain("in-call");
+    expect(button().querySelector("svg.icon-idle")).toBeTruthy();
+    expect(button().querySelector("svg.icon-call")).toBeTruthy();
   });
 
-  it("renders the phone icon inside the button", () => {
+  it("switches to the in-call style during a call and labels it", () => {
+    view.update({ ...READY, busy: true });
+    expect(button().className).toContain("in-call");
+    expect(button().getAttribute("aria-label")).toContain("On a call");
+  });
+
+  it("keeps the in-call style while reconnecting mid-call, with both facts in the label", () => {
+    view.update({ ...READY, busy: true, reconnecting: true });
+    expect(button().className).toContain("in-call");
+    const label = button().getAttribute("aria-label") ?? "";
+    expect(label).toContain("Reconnecting…");
+    expect(label).toContain("On a call");
+  });
+
+  it("returns to idle style when the call ends", () => {
+    view.update({ ...READY, busy: true });
     view.update(READY);
-    expect(root().querySelector("[data-role=dot] svg")).toBeTruthy();
+    expect(button().className).not.toContain("in-call");
+    expect(button().getAttribute("aria-label")).toContain("Ready");
   });
 });
 

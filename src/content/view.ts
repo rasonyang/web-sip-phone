@@ -43,13 +43,18 @@ const STYLE = `
 }
 .dot:hover { background: #fafafa; }
 .dot svg { width: 22px; height: 22px; display: block; pointer-events: none; }
+.dot .icon-call { display: none; }
+.dot.in-call { background: #f0fdf4; border-color: #bbf7d0; color: #16a34a; }
+.dot.in-call:hover { background: #dcfce7; }
+.dot.in-call .icon-idle { display: none; }
+.dot.in-call .icon-call { display: block; }
 .status {
   position: absolute; top: -4px; right: -4px; width: 12px; height: 12px;
   border-radius: 50%; border: 2px solid #fff; pointer-events: none;
 }
 .status-ok { background: #22c55e; }
-.status-busy { background: #f59e0b; }
-.status-off { background: #ef4444; }
+.status-warn { background: #f59e0b; }
+.status-err { background: #ef4444; }
 .status-pulse { animation: wsp-pulse 1.2s ease-in-out infinite; }
 @keyframes wsp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .card {
@@ -73,35 +78,57 @@ const STYLE = `
 .panel-foot { margin-top: 8px; }
 `;
 
-// Hardware SIP desk phone, drawn in lucide conventions (24px grid, stroke 2, round caps).
+// Hardware SIP desk phone (idle) and lifted handset (on a call), both drawn in lucide
+// conventions (24px grid, stroke 2, round caps). The desk-phone → handset swap is the
+// call-activity channel: the status dot only ever reports connection health.
 const PHONE_ICON = `
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<svg class="icon-idle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
   <path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6Z"/>
   <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/>
   <path d="M9 12h.01M12 12h.01M15 12h.01M9 15.5h.01M12 15.5h.01M15 15.5h.01"/>
+</svg>
+<svg class="icon-call" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
 </svg>`;
 
-type StatusView = { cls: "status-ok" | "status-busy" | "status-off"; pulse: boolean; label: string };
+// Connection health only — call activity never changes the dot.
+type DotView = { cls: "status-ok" | "status-warn" | "status-err"; pulse: boolean };
 
-function statusFor(state: DisplayState): StatusView {
+function dotFor(state: DisplayState): DotView {
   if (state.error) {
-    return { cls: "status-off", pulse: false, label: ERROR_COPY[state.error].title };
+    return { cls: "status-err", pulse: false };
   }
   // Amber pulse = transitional (connecting/reconnecting); solid red is reserved for
   // hard failure states so a blink is never mistaken for "failed".
   if (state.reconnecting) {
-    return { cls: "status-busy", pulse: true, label: "Reconnecting…" };
+    return { cls: "status-warn", pulse: true };
   }
   switch (state.runtime) {
     case RuntimeState.Ready:
-      return state.busy
-        ? { cls: "status-busy", pulse: false, label: "On a call" }
-        : { cls: "status-ok", pulse: false, label: "Ready" };
+      return { cls: "status-ok", pulse: false };
     case RuntimeState.Connecting:
     case RuntimeState.Registering:
-      return { cls: "status-busy", pulse: true, label: "Connecting…" };
+      return { cls: "status-warn", pulse: true };
     default:
-      return { cls: "status-off", pulse: false, label: "Not connected" };
+      return { cls: "status-err", pulse: false };
+  }
+}
+
+function labelFor(state: DisplayState): string {
+  if (state.error) {
+    return ERROR_COPY[state.error].title;
+  }
+  if (state.reconnecting) {
+    return state.busy ? "Reconnecting… — On a call" : "Reconnecting…";
+  }
+  switch (state.runtime) {
+    case RuntimeState.Ready:
+      return state.busy ? "On a call" : "Ready";
+    case RuntimeState.Connecting:
+    case RuntimeState.Registering:
+      return "Connecting…";
+    default:
+      return "Not connected";
   }
 }
 
@@ -166,8 +193,10 @@ export class WebSipPhoneView {
       this.wrap.appendChild(this.panel(state.link));
     }
 
-    const { cls, pulse, label } = statusFor(state);
+    const { cls, pulse } = dotFor(state);
+    const label = labelFor(state);
     this.statusDot.className = `status ${cls}${pulse ? " status-pulse" : ""}`;
+    this.dot.className = `dot${state.busy ? " in-call" : ""}`;
     this.dot.setAttribute("aria-label", `Web SIP Phone status: ${label}`);
     this.dot.title = label;
     this.wrap.appendChild(this.dot);
