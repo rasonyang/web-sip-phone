@@ -163,6 +163,22 @@ export class CallSessionManager {
     }
   }
 
+  /**
+   * Discard any session without signaling. Used when the transport is being rebuilt: the
+   * old dialogs are bound to the dead connection (FreeSWITCH routes them via fs_path), so
+   * a BYE could never be delivered anyway and the manager must be free to accept the next
+   * INVITE that arrives on the new transport.
+   */
+  forceIdle(): void {
+    if (this.resetTimer) {
+      clearTimeout(this.resetTimer);
+      this.resetTimer = null;
+    }
+    this.session = null;
+    this.mediaWired = false;
+    this.setState(CallState.Idle);
+  }
+
   private handleSessionState(s: string): void {
     if (s === "Established") {
       this.wireMedia();

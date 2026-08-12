@@ -38,6 +38,9 @@ export function diag(category: string, message: string, data?: Record<string, un
   if (entries.length > CAPACITY) {
     entries = entries.slice(entries.length - CAPACITY);
   }
+  // Mirror to the console so field issues can be inspected in the offscreen document's
+  // DevTools (filter: [WebSipPhone:diag]) without a debugger attached ahead of time.
+  console.debug(`[WebSipPhone:diag] ${category}: ${message}`, safeData ?? "");
 }
 
 export function getDiagEntries(): ReadonlyArray<DiagEntry> {

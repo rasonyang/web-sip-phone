@@ -179,6 +179,60 @@ describe("reconnect", () => {
     expect(ua.reconnects).toBeGreaterThanOrEqual(6);
   });
 
+  it("a wedged reconnect times out, the UA is rebuilt, and the next attempt recovers", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const firstUa = ua;
+    firstUa.manualReconnect = true; // reconnect() hangs forever — post-sleep zombie transport
+    firstUa.delegate.onDisconnect(new Error("system slept"));
+    await vi.advanceTimersByTimeAsync(1100); // first attempt fires and wedges
+    expect(firstUa.reconnects).toBe(1);
+    expect(last().reconnecting).toBe(true);
+
+    // 15s attempt timeout: counted as a failure, wedged UA replaced by a fresh one.
+    await vi.advanceTimersByTimeAsync(15000 + 100);
+    expect(ua).not.toBe(firstUa);
+    expect(firstUa.stopped).toBe(1);
+    expect(last().reconnecting).toBe(true);
+
+    // Next backoff attempt runs start() on the fresh (never-started) UA and recovers.
+    await vi.advanceTimersByTimeAsync(2000 + 100);
+    expect(ua.started).toBe(1);
+    expect(last().phase).toBe("ready");
+    expect(last().reconnecting).toBe(false);
+  });
+
+  it("repeated wedges keep rebuilding and surface CONNECTION_LOST after 5 attempts", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    ua.delegate.onDisconnect(new Error("system slept"));
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const current = ua;
+      current.manualReconnect = true;
+      // start() on rebuilt UAs must wedge too for this scenario: network still down.
+      current.start = () => new Promise<void>(() => {});
+      await vi.advanceTimersByTimeAsync(Math.min(1000 * 2 ** attempt, 30000) + 100); // attempt fires
+      await vi.advanceTimersByTimeAsync(15000 + 100); // and times out
+      expect(ua).not.toBe(current);
+    }
+    expect(last().errors).toContain("CONNECTION_LOST");
+    expect(last().reconnecting).toBe(true);
+  });
+
+  it("stop() during a wedged attempt does not resurrect state when the timeout fires", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const firstUa = ua;
+    firstUa.manualReconnect = true;
+    firstUa.delegate.onDisconnect(new Error("system slept"));
+    await vi.advanceTimersByTimeAsync(1100); // attempt wedges
+    await rt.stop();
+    const stopsAfterStop = ua.stopped;
+    await vi.advanceTimersByTimeAsync(15000 + 100); // timeout fires after stop()
+    expect(last().phase).toBe("stopped");
+    expect(ua.stopped).toBe(stopsAfterStop); // no rebuild, no extra teardown
+  });
+
   it("retry() resets backoff and reconnects immediately, success clears error", async () => {
     const rt = makeRuntime();
     await rt.start(CONFIG);
@@ -189,6 +243,123 @@ describe("reconnect", () => {
     rt.retry();
     await vi.advanceTimersByTimeAsync(10);
     expect(last().errors).not.toContain("CONNECTION_LOST");
+    expect(last().phase).toBe("ready");
+  });
+});
+
+describe("resync (post-sleep recovery)", () => {
+  it("rebuilds and re-registers even while the runtime believes it is ready", async () => {
+    // The reported field failure: after system sleep the server has expired the
+    // registration but the zombie socket looks alive, so no disconnect ever fires.
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(last().phase).toBe("ready");
+    const zombieUa = ua;
+    rt.resync();
+    expect(last().reconnecting).toBe(true);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua).not.toBe(zombieUa);
+    expect(zombieUa.stopped).toBe(1);
+    expect(ua.started).toBe(1); // fresh UA connects via start(), not reconnect()
+    expect(last().phase).toBe("ready");
+    expect(last().reconnecting).toBe(false);
+    expect(registerer.registers).toBe(1); // fresh registerer, fresh REGISTER
+  });
+
+  it("recovers even when a reconnect attempt is wedged at resync time", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const wedgedUa = ua;
+    wedgedUa.manualReconnect = true;
+    wedgedUa.delegate.onDisconnect(new Error("system slept"));
+    await vi.advanceTimersByTimeAsync(1100); // attempt fires and wedges
+    rt.resync();
+    // The wedged attempt still holds the in-flight slot; the resync attempt is queued
+    // and runs as soon as the wedge's 15s timeout clears it.
+    await vi.advanceTimersByTimeAsync(15000 + 200);
+    expect(ua).not.toBe(wedgedUa);
+    expect(last().phase).toBe("ready");
+    expect(last().reconnecting).toBe(false);
+  });
+
+  it("is a no-op when the runtime is stopped", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    await rt.stop();
+    const stopsBefore = ua.stopped;
+    rt.resync();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ua.stopped).toBe(stopsBefore);
+    expect(last().phase).toBe("stopped");
+  });
+});
+
+describe("liveness watchdog (server OPTIONS pings)", () => {
+  const OPTIONS_MSG = "OPTIONS sip:x@y.invalid;transport=ws SIP/2.0\r\n";
+
+  it("resyncs after ping silence exceeds 3 observed cadences", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const zombieUa = ua;
+    zombieUa.delegate.onTransportMessage(OPTIONS_MSG);
+    await vi.advanceTimersByTimeAsync(30000);
+    zombieUa.delegate.onTransportMessage(OPTIONS_MSG); // cadence learned: 30s
+    await vi.advanceTimersByTimeAsync(89000);
+    rt.checkLiveness();
+    expect(ua).toBe(zombieUa); // 89s < 90s floor — not yet
+    await vi.advanceTimersByTimeAsync(2000);
+    rt.checkLiveness();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua).not.toBe(zombieUa); // silence past threshold → rebuilt
+    expect(last().phase).toBe("ready"); // and recovered via fresh start()+register
+  });
+
+  it("never arms when the server sends no OPTIONS at all", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const sameUa = ua;
+    await vi.advanceTimersByTimeAsync(600000); // ten minutes of legal silence
+    rt.checkLiveness();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua).toBe(sameUa);
+    expect(last().phase).toBe("ready");
+  });
+
+  it("stays quiet while a reconnect is already in progress", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    ua.delegate.onTransportMessage(OPTIONS_MSG);
+    ua.reconnectFails = 99;
+    ua.delegate.onDisconnect(new Error("down"));
+    const reconnectingUa = ua;
+    await vi.advanceTimersByTimeAsync(200000);
+    rt.checkLiveness();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua).toBe(reconnectingUa); // no watchdog resync on top of the reconnect loop
+  });
+
+  it("a non-OPTIONS inbound message counts as life once armed", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const sameUa = ua;
+    sameUa.delegate.onTransportMessage(OPTIONS_MSG);
+    await vi.advanceTimersByTimeAsync(80000);
+    sameUa.delegate.onTransportMessage("SIP/2.0 200 OK\r\n"); // e.g. a register refresh reply
+    await vi.advanceTimersByTimeAsync(80000); // 160s since OPTIONS, 80s since any message
+    rt.checkLiveness();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua).toBe(sameUa);
+  });
+
+  it("rebuild during a call force-clears the session so busy state cannot stick", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    // Simulate an in-progress call via the sessions manager's public surface: an
+    // auto-answer INVITE that got accepted.
+    ua.delegate.onTransportMessage(OPTIONS_MSG);
+    rt.resync();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(last().callInProgress).toBe(false);
     expect(last().phase).toBe("ready");
   });
 });

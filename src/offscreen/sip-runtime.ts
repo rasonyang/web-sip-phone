@@ -20,6 +20,8 @@ export interface UaDelegate {
   onConnect(): void;
   onDisconnect(error?: Error): void;
   onInvite(invitation: unknown): void;
+  /** Raw inbound SIP message from the transport; feeds the liveness watchdog. */
+  onTransportMessage(message: string): void;
 }
 
 export interface UaFactory {
@@ -28,6 +30,43 @@ export interface UaFactory {
 
 const MAX_BACKOFF_MS = 30000;
 const PERSISTENT_FAILURE_ATTEMPTS = 5;
+// A reconnect attempt that neither resolves nor rejects within this window is treated as
+// wedged. This happens after system sleep: SIP.js's own connectionTimeout is a setTimeout
+// that gets suspended with the machine, and its transport returns the same never-settling
+// connect promise to every subsequent connect() call, so without an external timeout one
+// zombie attempt would block reconnection forever.
+const RECONNECT_ATTEMPT_TIMEOUT_MS = 15000;
+// Liveness watchdog. FreeSWITCH pings every registered contact with OPTIONS on a fixed
+// cadence (~30s with nat-options-ping / all-reg-options-ping); once those pings have been
+// observed, prolonged silence proves the socket is dead even though the browser cannot see
+// it (send() on a half-open TCP connection never fails, and no close event ever fires for a
+// connection orphaned by system sleep). Three missed cadences — never less than 90s so a
+// single delayed ping can't trip it — triggers a full resync. Deployments that never send
+// OPTIONS never arm the watchdog, so registration-refresh-only silence stays legal.
+const LIVENESS_FLOOR_MS = 90000;
+const LIVENESS_GAP_MULTIPLIER = 3;
+
+class ReconnectTimeoutError extends Error {
+  constructor() {
+    super(`reconnect attempt exceeded ${RECONNECT_ATTEMPT_TIMEOUT_MS}ms`);
+  }
+}
+
+function withAttemptTimeout(op: Promise<void>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ReconnectTimeoutError()), RECONNECT_ATTEMPT_TIMEOUT_MS);
+    op.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
 
 export class SipRuntime {
   private ua: UaLike | null = null;
@@ -41,6 +80,14 @@ export class SipRuntime {
   private running = false;
   private callInProgress = false;
   private micOk = false;
+  /** Config the runtime was started with; needed to rebuild the UA after a wedged transport. */
+  private config: RuntimeConfig | null = null;
+  /** True while the current UA instance has never been start()ed — reconnect() on a fresh UA rejects. */
+  private uaNeedsStart = false;
+  // Liveness watchdog state, reset with every new transport (createUa).
+  private lastInboundMs = 0;
+  private lastOptionsMs: number | null = null;
+  private optionsGapMs: number | null = null;
   // Guards against races between start()/stop()/attemptReconnect(): each async continuation
   // captures the generation it began under and bails out if a later start()/stop() call has
   // since superseded it (bumped this.generation), rather than mutating stale/torn-down state.
@@ -94,16 +141,13 @@ export class SipRuntime {
     this.phase = "connecting";
     this.report();
 
-    const { ua, registerer } = this.deps.factory.create(config, {
-      onConnect: () => {},
-      onDisconnect: (error) => this.handleDisconnect(error),
-      onInvite: (invitation) => this.sessions.handleInvite(invitation as InvitationLike)
-    });
-    this.ua = ua;
-    this.registerer = registerer;
+    this.config = config;
+    this.createUa(config);
+    const ua = this.ua!;
 
     try {
       await ua.start();
+      this.uaNeedsStart = false;
     } catch (e) {
       if (gen !== this.generation) {
         return;
@@ -162,6 +206,74 @@ export class SipRuntime {
       });
   }
 
+  private createUa(config: RuntimeConfig): void {
+    const { ua, registerer } = this.deps.factory.create(config, {
+      onConnect: () => {},
+      onDisconnect: (error) => this.handleDisconnect(error),
+      onInvite: (invitation) => this.sessions.handleInvite(invitation as InvitationLike),
+      onTransportMessage: (message) => this.noteInboundMessage(message)
+    });
+    this.ua = ua;
+    this.registerer = registerer;
+    this.uaNeedsStart = true;
+    // Fresh transport: restart the liveness clock and re-learn the server's ping cadence
+    // (a gap measured across the rebuild would span the dead period and inflate the threshold).
+    this.lastInboundMs = Date.now();
+    this.lastOptionsMs = null;
+    this.optionsGapMs = null;
+  }
+
+  private noteInboundMessage(message: string): void {
+    const now = Date.now();
+    this.lastInboundMs = now;
+    if (message.startsWith("OPTIONS ")) {
+      if (this.lastOptionsMs !== null) {
+        this.optionsGapMs = now - this.lastOptionsMs;
+      }
+      this.lastOptionsMs = now;
+    }
+  }
+
+  /**
+   * Called on the offscreen heartbeat. When the server's OPTIONS pings have been observed
+   * on this transport and then go silent for several cadences, the socket is dead no matter
+   * what the runtime believes — force a resync.
+   */
+  checkLiveness(now = Date.now()): void {
+    if (!this.running || this.phase !== "ready" || this.reconnecting || this.lastOptionsMs === null) {
+      return;
+    }
+    const threshold = Math.max(LIVENESS_FLOOR_MS, (this.optionsGapMs ?? 0) * LIVENESS_GAP_MULTIPLIER);
+    const silence = now - this.lastInboundMs;
+    if (silence > threshold) {
+      diag("sip", "liveness watchdog: server ping silence, transport presumed dead", {
+        silenceMs: silence,
+        thresholdMs: threshold
+      });
+      this.resync();
+    }
+  }
+
+  /**
+   * Replace a wedged UA with a fresh one. SIP.js's transport hands the same never-settling
+   * connect promise to every connect() call once an attempt is stuck (e.g. a socket orphaned
+   * by system sleep), so a new UA/Transport — and with it a new WebSocket — is the only way
+   * out. The old UA is stopped best-effort in the background.
+   */
+  private rebuildUa(): void {
+    const old = this.ua;
+    this.ua = null;
+    this.registerer = null;
+    void old?.stop().catch(() => {});
+    // Any session belongs to the old transport (FreeSWITCH routes its dialogs via the dead
+    // connection's fs_path), so it is unrecoverable: discard it without signaling so the
+    // manager can accept the next INVITE arriving on the new transport.
+    this.sessions.forceIdle();
+    if (this.running && this.config) {
+      this.createUa(this.config);
+    }
+  }
+
   private handleDisconnect(error?: Error): void {
     if (!this.running || !error) {
       return; // graceful disconnect during stop()
@@ -194,10 +306,12 @@ export class SipRuntime {
     this.attemptInFlight = true;
     const gen = this.generation;
     try {
-      await this.ua.reconnect();
+      // A rebuilt UA has never been started; reconnect() on it would reject immediately.
+      await withAttemptTimeout(this.uaNeedsStart ? this.ua.start() : this.ua.reconnect());
       if (gen !== this.generation) {
         return; // stop()/a newer start() ran while reconnect() was pending; ua is already torn down
       }
+      this.uaNeedsStart = false;
       this.phase = "registering";
       this.report();
       await this.register(gen);
@@ -214,6 +328,10 @@ export class SipRuntime {
       }
       this.attempts++;
       diag("sip", "reconnect attempt failed", { attempt: this.attempts, error: String(e) });
+      if (e instanceof ReconnectTimeoutError) {
+        // The transport is wedged; retrying on it would await the same dead promise forever.
+        this.rebuildUa();
+      }
       if (this.attempts >= PERSISTENT_FAILURE_ATTEMPTS) {
         this.errors.add("CONNECTION_LOST");
       }
@@ -236,10 +354,34 @@ export class SipRuntime {
     this.scheduleReconnect(0);
   }
 
+  /**
+   * Force a full transport rebuild and re-registration, regardless of what state the runtime
+   * believes it is in. Used after suspected system sleep or a network change: the socket may
+   * be a zombie the browser cannot detect (send() on a half-open TCP connection does not
+   * fail), the server may have expired the registration while we were suspended, and any
+   * in-flight connect promise may be permanently wedged. None of that state can be trusted,
+   * so it is all discarded.
+   */
+  resync(): void {
+    if (!this.running) {
+      return;
+    }
+    diag("sip", "resync: rebuilding transport after suspend/network change");
+    // Invalidate any in-flight attempt/register continuation before tearing the UA down,
+    // exactly like stop()/start() do, so a wedged attempt's late timeout cannot double-rebuild.
+    this.generation++;
+    this.reconnecting = true;
+    this.attempts = 0;
+    this.report();
+    this.rebuildUa();
+    this.scheduleReconnect(0);
+  }
+
   async stop(): Promise<void> {
     this.running = false;
     const gen = ++this.generation;
     this.attemptQueued = false;
+    this.config = null;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
