@@ -105,6 +105,63 @@ describe("service worker lifecycle", () => {
   });
 });
 
+describe("account change while running", () => {
+  const runtimeTypes = () =>
+    fake.sentRuntimeMessages.map((m) => (m as { type?: string }).type).filter((t) => t?.startsWith("runtime/"));
+
+  async function bootAndStart() {
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake._openTab(1, "https://crm.example.com/");
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
+    fake.sentRuntimeMessages.length = 0;
+  }
+
+  it("restarts the runtime with the new credentials on save", async () => {
+    await bootAndStart();
+    seedConfig({ account: { ...ACCOUNT, username: "1002" }, allowSites: ["crm.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await vi.waitFor(() => {
+      expect(runtimeTypes()).toContain("runtime/stop");
+      expect(runtimeTypes()).toContain("runtime/start");
+    });
+    const types = runtimeTypes();
+    expect(types.indexOf("runtime/stop")).toBeLessThan(types.indexOf("runtime/start"));
+    const start = fake.sentRuntimeMessages.find((m) => (m as { type?: string }).type === "runtime/start") as {
+      config: { sipUri: string };
+    };
+    expect(start.config.sipUri).toBe("sip:1002@voice.example.com");
+    // The offscreen document is reused, not torn down.
+    expect(fake._offscreenOpen).toBe(true);
+  });
+
+  it("re-saving an unchanged account does not restart the runtime", async () => {
+    await bootAndStart();
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]);
+  });
+
+  it("defers the restart during a call and applies it when the call ends", async () => {
+    await bootAndStart();
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: true }), {}, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    seedConfig({ account: { ...ACCOUNT, password: "new-pw" }, allowSites: ["crm.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]); // live call untouched
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: false }), {}, () => {});
+    await vi.waitFor(() => {
+      expect(runtimeTypes()).toContain("runtime/stop");
+      expect(runtimeTypes()).toContain("runtime/start");
+    });
+    const start = fake.sentRuntimeMessages.find((m) => (m as { type?: string }).type === "runtime/start") as {
+      config: { password: string };
+    };
+    expect(start.config.password).toBe("new-pw");
+  });
+});
+
 describe("broadcast", () => {
   it("sends per-tab state with guardUnload only on the last tab during a call", async () => {
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });

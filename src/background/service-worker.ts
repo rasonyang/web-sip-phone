@@ -1,6 +1,6 @@
 import { originPattern } from "../shared/allow-sites.js";
 import { deriveEndpoints, iceServers, isAccountComplete, type WebSipPhoneConfig } from "../shared/config.js";
-import { isMsg, type Msg, type OffscreenStatus, type TabState } from "../shared/messages.js";
+import { isMsg, type Msg, type OffscreenStatus, type RuntimeConfig, type TabState } from "../shared/messages.js";
 import { computeDisplayState } from "./state-aggregator.js";
 import { loadConfig, saveConfig } from "./config-store.js";
 import { closeOffscreen, ensureOffscreen } from "./offscreen-manager.js";
@@ -13,7 +13,15 @@ let config: WebSipPhoneConfig;
 let tracker: TabTracker;
 let offscreenStatus: OffscreenStatus | null = null;
 let runtimeStarted = false;
+/** Fingerprint of the config the runtime was started with; detects account/TURN edits while running. */
+let runtimeConfigKey: string | null = null;
 let evaluating = Promise.resolve();
+
+function desiredRuntimeConfig(): RuntimeConfig {
+  const account = config.account!;
+  const { sipUri, wssUrl } = deriveEndpoints(account);
+  return { sipUri, wssUrl, username: account.username, password: account.password, iceServers: iceServers(config.turn) };
+}
 
 function displayState() {
   return computeDisplayState({
@@ -46,22 +54,31 @@ function evaluate(): Promise<void> {
   evaluating = evaluating.then(async () => {
     try {
       const shouldRun = isAccountComplete(config.account) && tracker.count() > 0;
-      if (shouldRun && !runtimeStarted) {
-        await ensureOffscreen();
-        const account = config.account!;
-        const { sipUri, wssUrl } = deriveEndpoints(account);
-        const msg: Msg = {
-          target: "offscreen",
-          type: "runtime/start",
-          config: { sipUri, wssUrl, username: account.username, password: account.password, iceServers: iceServers(config.turn) }
-        };
-        await chrome.runtime.sendMessage(msg).catch(() => {});
-        runtimeStarted = true;
-      } else if (!shouldRun && runtimeStarted) {
+      if (shouldRun) {
+        const runtimeConfig = desiredRuntimeConfig();
+        const key = JSON.stringify(runtimeConfig);
+        const startMsg: Msg = { target: "offscreen", type: "runtime/start", config: runtimeConfig };
+        if (!runtimeStarted) {
+          await ensureOffscreen();
+          await chrome.runtime.sendMessage(startMsg).catch(() => {});
+          runtimeStarted = true;
+          runtimeConfigKey = key;
+        } else if (key !== runtimeConfigKey && !(offscreenStatus?.callInProgress ?? false)) {
+          // Account/TURN changed while the runtime is up. SipRuntime.start() is a no-op
+          // while running, so an explicit stop must precede the restart. Deferred while a
+          // call is in progress (a settings edit must not drop a live call); the
+          // offscreen/status handler re-evaluates once the call ends.
+          const stopMsg: Msg = { target: "offscreen", type: "runtime/stop" };
+          await chrome.runtime.sendMessage(stopMsg).catch(() => {});
+          await chrome.runtime.sendMessage(startMsg).catch(() => {});
+          runtimeConfigKey = key;
+        }
+      } else if (runtimeStarted) {
         const msg: Msg = { target: "offscreen", type: "runtime/stop" };
         await chrome.runtime.sendMessage(msg).catch(() => {});
         await closeOffscreen();
         runtimeStarted = false;
+        runtimeConfigKey = null;
         offscreenStatus = null;
       }
       await broadcast();
@@ -98,7 +115,9 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
   switch (msg.type) {
     case "offscreen/status":
       offscreenStatus = msg.status;
-      await broadcast();
+      // evaluate() (which ends in a broadcast) rather than broadcast() directly, so a
+      // config change deferred during a call is applied as soon as the call ends.
+      await evaluate();
       break;
     case "ui/getState":
       sendResponse(tabState(sender.tab?.id ?? -1));
