@@ -1,5 +1,6 @@
 import type { DotPosition } from "../shared/config.js";
 import { isMsg, type Msg, type TabState } from "../shared/messages.js";
+import { RuntimeState, type DisplayState } from "../shared/state.js";
 import { applyPosition, snapToEdge } from "./drag.js";
 import { WebSipPhoneView, type UiIntent } from "./view.js";
 
@@ -40,13 +41,50 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
   // Set once any TabState (initial fetch or broadcast) has been applied; gates the initial-fetch retry loop.
   let gotState = false;
   let lastPos: DotPosition | null = null;
+  let lastState: DisplayState | null = null;
   function applyTabState(ts: TabState): void {
+    const firstState = !gotState;
     gotState = true;
     lastPos = ts.pos;
+    lastState = ts.state;
     view.update(ts.state);
     applyPosition(host, ts.pos);
     setGuard(ts.guardUnload);
+    if (firstState) {
+      // Opening the page while the voice link is in a failed state should recover it
+      // without requiring the user to find the Retry button.
+      maybeNudgeRecovery();
+    }
   }
+
+  // Coming back to the page is the user's natural "make it work" gesture: if the voice
+  // link is unhealthy when this tab is (re)opened or refocused, nudge the runtime to retry
+  // immediately instead of waiting for its own timers. Throttled so tab-flipping cannot
+  // spam the runtime, and a no-op whenever the link is healthy.
+  const NUDGE_MIN_INTERVAL_MS = 10000;
+  let lastNudgeAt = 0;
+  function maybeNudgeRecovery(): void {
+    if (document.visibilityState !== "visible" || !lastState) {
+      return;
+    }
+    const s = lastState;
+    const unhealthy =
+      s.error !== null ||
+      s.reconnecting ||
+      s.runtime === RuntimeState.Connecting ||
+      s.runtime === RuntimeState.Registering;
+    if (!unhealthy) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastNudgeAt < NUDGE_MIN_INTERVAL_MS) {
+      return;
+    }
+    lastNudgeAt = now;
+    send({ target: "background", type: "ui/retry" });
+  }
+  document.addEventListener("visibilitychange", maybeNudgeRecovery);
+  window.addEventListener("focus", maybeNudgeRecovery);
 
   chrome.runtime.onMessage.addListener((raw) => {
     if (isMsg(raw) && raw.target === "content" && raw.type === "state/update") {

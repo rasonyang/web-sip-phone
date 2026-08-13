@@ -124,6 +124,9 @@ beforeEach(() => {
   micState = "granted";
   rejectRegister = false;
   manualRegister = false;
+  // Zero jitter by default so the timing-sensitive tests stay deterministic; the jitter
+  // tests override this per-case.
+  vi.spyOn(Math, "random").mockReturnValue(0);
 });
 
 describe("registration lifecycle", () => {
@@ -233,6 +236,29 @@ describe("reconnect", () => {
     expect(ua.stopped).toBe(stopsAfterStop); // no rebuild, no extra teardown
   });
 
+  it("backoff delays carry random jitter (up to +30% of the base)", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(1); // worst case: full jitter
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    ua.reconnectFails = 99;
+    ua.delegate.onDisconnect(new Error("down"));
+    await vi.advanceTimersByTimeAsync(1000 + 100); // base delay elapsed…
+    expect(ua.reconnects).toBe(0); // …but the jittered attempt has not fired yet
+    await vi.advanceTimersByTimeAsync(300); // + 30% jitter boundary
+    expect(ua.reconnects).toBe(1);
+  });
+
+  it("explicit zero-delay paths (retry) stay immediate — jitter never applies", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    ua.delegate.onDisconnect(new Error("down"));
+    rt.retry();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua.reconnects).toBe(1);
+    expect(last().phase).toBe("ready");
+  });
+
   it("retry() resets backoff and reconnects immediately, success clears error", async () => {
     const rt = makeRuntime();
     await rt.start(CONFIG);
@@ -291,6 +317,70 @@ describe("resync (post-sleep recovery)", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(ua.stopped).toBe(stopsBefore);
     expect(last().phase).toBe("stopped");
+  });
+});
+
+describe("registration failure is never terminal", () => {
+  it("a rejected REGISTER is retried automatically and recovers when the cause clears", async () => {
+    rejectRegister = true;
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(last().errors).toContain("REGISTRATION_FAILED");
+    rejectRegister = false;
+    await vi.advanceTimersByTimeAsync(30000 + 100);
+    expect(registerer.registers).toBe(2);
+    expect(last().phase).toBe("ready");
+    expect(last().errors).not.toContain("REGISTRATION_FAILED");
+  });
+
+  it("keeps retrying on a 30s cadence while rejections continue", async () => {
+    rejectRegister = true;
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    await vi.advanceTimersByTimeAsync(2 * 30000 + 200);
+    expect(registerer.registers).toBe(3);
+    expect(last().errors).toContain("REGISTRATION_FAILED");
+  });
+
+  it("a pending register retry is invalidated by stop()", async () => {
+    rejectRegister = true;
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const before = registerer.registers;
+    await rt.stop();
+    await vi.advanceTimersByTimeAsync(60000 + 200);
+    expect(registerer.registers).toBe(before);
+  });
+
+  it("the liveness watchdog also fires while stuck registering", async () => {
+    rejectRegister = true;
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const zombieUa = ua;
+    zombieUa.delegate.onTransportMessage("OPTIONS sip:x@y.invalid SIP/2.0\r\n");
+    await vi.advanceTimersByTimeAsync(30000);
+    zombieUa.delegate.onTransportMessage("OPTIONS sip:x@y.invalid SIP/2.0\r\n");
+    await vi.advanceTimersByTimeAsync(95000); // pings stop: socket presumed dead
+    rt.checkLiveness();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(ua).not.toBe(zombieUa);
+  });
+});
+
+describe("service worker restart resync", () => {
+  it("a redundant start() while running replays the current status instead of staying silent", async () => {
+    // MV3 kills the SW after ~30s idle; on restart it re-sends runtime/start and needs the
+    // status replayed, otherwise it renders "Connecting…" forever over a healthy runtime.
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(last().phase).toBe("ready");
+    const before = statuses.length;
+    const firstUa = ua;
+    await rt.start(CONFIG);
+    expect(statuses.length).toBe(before + 1);
+    expect(last().phase).toBe("ready");
+    expect(ua).toBe(firstUa); // pure status replay — no second UA, no re-register
+    expect(registerer.registers).toBe(1);
   });
 });
 

@@ -30,6 +30,16 @@ export interface UaFactory {
 
 const MAX_BACKOFF_MS = 30000;
 const PERSISTENT_FAILURE_ATTEMPTS = 5;
+// Random jitter (0..30% on top of the base delay) spreads reconnect storms: after a server
+// restart or network blip every client's backoff ladder starts at the same instant, and
+// without jitter they all hammer the server in lockstep at 1s, 2s, 4s…
+const BACKOFF_JITTER_FACTOR = 0.3;
+
+/** 1s → 2s → 4s → 8s → 16s → 30s (cap), plus 0..30% random jitter. */
+function backoffDelayMs(attempts: number): number {
+  const base = Math.min(1000 * 2 ** attempts, MAX_BACKOFF_MS);
+  return base + Math.random() * base * BACKOFF_JITTER_FACTOR;
+}
 // A reconnect attempt that neither resolves nor rejects within this window is treated as
 // wedged. This happens after system sleep: SIP.js's own connectionTimeout is a setTimeout
 // that gets suspended with the machine, and its transport returns the same never-settling
@@ -45,6 +55,10 @@ const RECONNECT_ATTEMPT_TIMEOUT_MS = 15000;
 // OPTIONS never arm the watchdog, so registration-refresh-only silence stays legal.
 const LIVENESS_FLOOR_MS = 90000;
 const LIVENESS_GAP_MULTIPLIER = 3;
+// A failed REGISTER (rejected or send error) must never be terminal: the cause is usually
+// transient (server restart, post-sleep flap, stale nonce), and if it truly is bad
+// credentials the periodic retry is harmless while the error card keeps telling the user.
+const REGISTER_RETRY_MS = 30000;
 
 class ReconnectTimeoutError extends Error {
   constructor() {
@@ -77,6 +91,7 @@ export class SipRuntime {
   private reconnecting = false;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private registerRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private callInProgress = false;
   private micOk = false;
@@ -117,6 +132,11 @@ export class SipRuntime {
 
   async start(config: RuntimeConfig): Promise<void> {
     if (this.running) {
+      // A redundant start arrives whenever the MV3 service worker is killed and restarted:
+      // its in-memory status copy is gone (it renders "Connecting…" until told otherwise)
+      // and a steady runtime reports nothing on its own. Replay the current status so the
+      // restarted worker resynchronizes instead of displaying a stale connecting state.
+      this.report();
       return;
     }
     this.running = true;
@@ -192,6 +212,7 @@ export class SipRuntime {
             // Never leave a stale "ready" behind a rejected re-register.
             this.phase = "registering";
             this.report();
+            this.scheduleRegisterRetry(gen);
           }
         }
       })
@@ -203,7 +224,25 @@ export class SipRuntime {
         this.errors.add("REGISTRATION_FAILED");
         this.phase = "registering";
         this.report();
+        this.scheduleRegisterRetry(gen);
       });
+  }
+
+  private scheduleRegisterRetry(gen: number): void {
+    if (this.registerRetryTimer) {
+      clearTimeout(this.registerRetryTimer);
+    }
+    // Same jitter rationale as the reconnect ladder: after a server restart, every client's
+    // failed registration would otherwise retry on the same 30s beat.
+    const delay = REGISTER_RETRY_MS + Math.random() * REGISTER_RETRY_MS * BACKOFF_JITTER_FACTOR;
+    this.registerRetryTimer = setTimeout(() => {
+      this.registerRetryTimer = null;
+      if (!this.running || gen !== this.generation || this.phase === "ready") {
+        return;
+      }
+      diag("sip", "retrying REGISTER after failure");
+      void this.register(gen);
+    }, delay);
   }
 
   private createUa(config: RuntimeConfig): void {
@@ -240,7 +279,10 @@ export class SipRuntime {
    * what the runtime believes — force a resync.
    */
   checkLiveness(now = Date.now()): void {
-    if (!this.running || this.phase !== "ready" || this.reconnecting || this.lastOptionsMs === null) {
+    // Armed in "registering" too: a registration stuck failing because the socket died
+    // (the server only pings registered contacts, so the silence is real) must also resync.
+    const connectedPhase = this.phase === "ready" || this.phase === "registering";
+    if (!this.running || !connectedPhase || this.reconnecting || this.lastOptionsMs === null) {
       return;
     }
     const threshold = Math.max(LIVENESS_FLOOR_MS, (this.optionsGapMs ?? 0) * LIVENESS_GAP_MULTIPLIER);
@@ -288,7 +330,9 @@ export class SipRuntime {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
-    const delay = delayMs ?? Math.min(1000 * 2 ** this.attempts, MAX_BACKOFF_MS);
+    // Explicit delays (retry()/resync()/queued follow-ups pass 0) stay exact; only the
+    // automatic backoff ladder gets jitter.
+    const delay = delayMs ?? backoffDelayMs(this.attempts);
     this.reconnectTimer = setTimeout(() => void this.attemptReconnect(), delay);
   }
 
@@ -385,6 +429,10 @@ export class SipRuntime {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.registerRetryTimer) {
+      clearTimeout(this.registerRetryTimer);
+      this.registerRetryTimer = null;
     }
     // Capture and detach the current UA/registerer synchronously (before any await) so a
     // fresh start() that races this stop() gets its own instances immediately and can never
