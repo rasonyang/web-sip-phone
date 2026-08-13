@@ -1,7 +1,7 @@
 import { clearAccount, loadConfig, saveConfig } from "../background/config-store.js";
 import { isMsg } from "../shared/messages.js";
 import { RuntimeState } from "../shared/state.js";
-import { normalizeHostname, originPattern } from "../shared/allow-sites.js";
+import { normalizeHostname, originPatterns } from "../shared/allow-sites.js";
 import { MIC_CONSTRAINTS } from "../offscreen/media.js";
 
 declare const __SIPJS_REF__: string;
@@ -164,7 +164,7 @@ async function renderSites(): Promise<void> {
           return;
         }
         // Revoke where possible; failure is non-fatal (design.md §5.2).
-        await chrome.permissions.remove({ origins: [originPattern(host)] }).catch(() => {});
+        await chrome.permissions.remove({ origins: originPatterns(host) }).catch(() => {});
         await renderSites();
       })();
     });
@@ -186,7 +186,7 @@ $("site-add").addEventListener("click", () => {
       $("site-error").textContent = "Already configured.";
       return;
     }
-    const granted = await chrome.permissions.request({ origins: [originPattern(host)] });
+    const granted = await chrome.permissions.request({ origins: originPatterns(host) });
     if (!granted) {
       $("site-error").textContent = "Chrome permission was not granted.";
       return;
@@ -194,7 +194,7 @@ $("site-add").addEventListener("click", () => {
     try {
       await mutateSites((sites) => (sites.includes(host) ? null : [...sites, host]));
     } catch {
-      await chrome.permissions.remove({ origins: [originPattern(host)] }).catch(() => {});
+      await chrome.permissions.remove({ origins: originPatterns(host) }).catch(() => {});
       $("site-error").textContent = "Could not save the site. Please try again.";
       return;
     }

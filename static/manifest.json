@@ -5,7 +5,7 @@
   "description": "WebRTC SIP phone connection indicator. Registers your SIP extension over WSS and shows live status: ready, busy, or offline.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "offscreen", "scripting", "tabs"],
-  "optional_host_permissions": ["https://*/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
   "background": { "service_worker": "service-worker.js", "type": "module" },
   "options_page": "options.html",
   "icons": {

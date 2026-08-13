@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeHostname, originPattern, urlMatchesAllowSite } from "../../src/shared/allow-sites.js";
+import { normalizeHostname, originPatterns, urlMatchesAllowSite } from "../../src/shared/allow-sites.js";
 
 describe("normalizeHostname", () => {
   it("lowercases and trims", () => {
@@ -36,6 +36,29 @@ describe("urlMatchesAllowSite", () => {
 
 describe("originPattern", () => {
   it("builds the https match pattern", () => {
-    expect(originPattern("crm.example.com")).toBe("https://crm.example.com/*");
+    expect(originPatterns("crm.example.com")).toEqual(["https://crm.example.com/*"]);
+  });
+  it("loopback hosts get both schemes (match patterns cannot carry a port)", () => {
+    expect(originPatterns("127.0.0.1")).toEqual(["http://127.0.0.1/*", "https://127.0.0.1/*"]);
+    expect(originPatterns("localhost")).toEqual(["http://localhost/*", "https://localhost/*"]);
+  });
+});
+
+describe("loopback development exception", () => {
+  it("accepts loopback hosts and strips a pasted port", () => {
+    expect(normalizeHostname("127.0.0.1")).toBe("127.0.0.1");
+    expect(normalizeHostname("localhost")).toBe("localhost");
+    expect(normalizeHostname("127.0.0.1:8080")).toBe("127.0.0.1");
+    expect(normalizeHostname("LocalHost:3000")).toBe("localhost");
+  });
+  it("still rejects ports on non-loopback hosts", () => {
+    expect(normalizeHostname("crm.example.com:8443")).toBeNull();
+  });
+  it("matches http loopback URLs on any port, but never http on real hosts", () => {
+    const sites = ["127.0.0.1", "localhost", "crm.example.com"];
+    expect(urlMatchesAllowSite("http://127.0.0.1:8080/app", sites)).toBe(true);
+    expect(urlMatchesAllowSite("http://localhost:3000/", sites)).toBe(true);
+    expect(urlMatchesAllowSite("https://localhost/", sites)).toBe(true);
+    expect(urlMatchesAllowSite("http://crm.example.com/", sites)).toBe(false);
   });
 });

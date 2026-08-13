@@ -1,4 +1,4 @@
-import { originPattern } from "../shared/allow-sites.js";
+import { originPatterns } from "../shared/allow-sites.js";
 import { deriveEndpoints, iceServers, isAccountComplete, type WebSipPhoneConfig } from "../shared/config.js";
 import { isMsg, type Msg, type OffscreenStatus, type RuntimeConfig, type TabState } from "../shared/messages.js";
 import { computeDisplayState } from "./state-aggregator.js";
@@ -103,7 +103,7 @@ async function syncContentScripts(): Promise<void> {
       toAdd.map((host) => ({
         id: SCRIPT_PREFIX + host,
         js: ["content.js"],
-        matches: [originPattern(host)],
+        matches: originPatterns(host),
         runAt: "document_idle" as const,
         persistAcrossSessions: true
       }))
