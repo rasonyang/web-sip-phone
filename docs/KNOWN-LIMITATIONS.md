@@ -20,16 +20,15 @@ local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, v
 - **Single account, single call.** Only one SIP account and one concurrent SIP session are
   supported. An unexpected second INVITE while a session is active is rejected with `486 Busy
   Here`; the existing session is unaffected.
-- **Account and TURN configuration changes take effect on the next runtime start, not
-  immediately.** There is no hot credential reload mid-registration: after changing Domain,
-  Account, Password, or TURN settings, close and reopen the last Allow Site tab (or use Retry on
-  the dot) to force the SIP runtime to restart with the new configuration.
-- **The privacy-policy URL on the About page is a placeholder** (`https://example.invalid/privacy`
-  in `static/options.html`). The organization deploying this extension must replace it with a real
-  policy URL before Chrome Web Store submission.
-- **Store listing assets are not included.** Screenshots, promotional tiles, and other Chrome Web
-  Store listing assets are not part of this deliverable; the deploying organization must produce
-  them separately.
+- **Changing the account or TURN settings during a call is deferred until the call ends.** Saving
+  new settings restarts the SIP runtime so the new credentials take effect immediately, except
+  while a call is in progress — a settings edit must not drop a live call, so the restart waits
+  for the call to end.
+- **ICE gathering is capped at 1 second** (`iceGatheringTimeout` in `src/offscreen/sipjs-adapter.ts`;
+  SIP.js defaults to 5000ms). This keeps answer latency near a second instead of five, which suits
+  the LAN-first deployments this targets. Because SIP signaling here is non-trickle, any candidate
+  gathered after the cap never reaches the peer: deployments that depend on TURN relay candidates
+  across heavy NAT may need the value raised.
 - **MV3 service-worker listener-registration timing should be watched during live testing.**
   Chrome requires event listeners (`chrome.runtime.onMessage`, `chrome.tabs.on*`, etc.) to be
   registered synchronously on service-worker startup to reliably survive the worker being woken

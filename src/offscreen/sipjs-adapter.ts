@@ -16,7 +16,17 @@ export const realUaFactory: UaFactory = {
       authorizationUsername: config.username,
       authorizationPassword: config.password,
       sessionDescriptionHandlerFactoryOptions: {
-        peerConnectionConfiguration: { iceServers: config.iceServers }
+        peerConnectionConfiguration: { iceServers: config.iceServers },
+        // SIP.js defaults to 5000ms, and it waits out the full timeout whenever any candidate
+        // source never settles — a pseudo-interface from a VPN, an unreachable IPv6 route —
+        // which is the common case. Since the answer SDP is only sent once this wait ends,
+        // that default put ~5s of ringback between "answer" and the call going active.
+        // 1000ms suits the LAN-first deployments this targets: host candidates are immediate
+        // and STUN-derived srflx candidates typically arrive well inside it. The cost is real
+        // but bounded: SIP signaling here is non-trickle, so any candidate gathered after the
+        // cap never reaches the peer. Deployments that depend on TURN relay candidates across
+        // heavy NAT may need this raised.
+        iceGatheringTimeout: 1000
       },
       logBuiltinEnabled: false,
       delegate: {
