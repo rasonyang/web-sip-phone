@@ -29,66 +29,75 @@ export const ERROR_COPY: Record<ErrorCode, { title: string; detail: string; acti
   }
 };
 
-// Styling follows the shadcn/ui "neutral" palette (Inter, neutral-200 borders, neutral-600
-// icon stroke) so the widget blends into shadcn-based host applications.
+// Tokens copied from the host application's design system (ui-test web/src/index.css) so the
+// widget reads as part of the shell rather than an add-on. State colors are semantic there:
+// available/oncall/ringing/breach/offline, which is why "on a call" gets its own hue instead
+// of overloading the amber used for transitional states.
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-.wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.wrap {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  --card: #fff; --foreground: #18181b; --muted-foreground: #71717a; --border: #e5e7eb;
+  --state-available: #16a34a; --state-oncall: #4f46e5; --state-ringing: #f59e0b;
+  --state-breach: #dc2626; --state-offline: #d4d4d8;
+}
 .dot {
-  position: relative; width: 38px; height: 38px; border-radius: 10px;
-  border: 1px solid #e5e5e5; background: #fff; color: #525252;
-  box-shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+  position: relative; width: 36px; height: 36px; border-radius: 9999px;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground);
+  box-shadow: 0 1px 2px rgba(0,0,0,.05);
   cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0;
 }
-.dot:hover { background: #fafafa; }
-.dot svg { width: 22px; height: 22px; display: block; pointer-events: none; }
-.dot .icon-call { display: none; }
-.dot.in-call { background: #f0fdf4; border-color: #bbf7d0; color: #16a34a; }
-.dot.in-call:hover { background: #dcfce7; }
-.dot.in-call .icon-idle { display: none; }
-.dot.in-call .icon-call { display: block; }
+.dot:hover { background: #f4f4f5; }
+.dot:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; }
+.dot svg { width: 16px; height: 16px; display: block; pointer-events: none; }
+/* Call activity rides the button; the status dot stays a pure connection-health signal. */
+.dot.in-call { background: #eef2ff; border-color: #c7d2fe; color: var(--state-oncall); }
+.dot.in-call:hover { background: #e0e7ff; }
 .status {
-  position: absolute; top: -4px; right: -4px; width: 12px; height: 12px;
-  border-radius: 50%; border: 2px solid #fff; pointer-events: none;
+  position: absolute; top: 1px; right: 1px; width: 8px; height: 8px;
+  border-radius: 9999px; border: 1px solid var(--card); pointer-events: none;
 }
-.status-ok { background: #22c55e; }
-.status-warn { background: #f59e0b; }
-.status-err { background: #ef4444; }
+.status-ok { background: var(--state-available); }
+.status-warn { background: var(--state-ringing); }
+.status-err { background: var(--state-breach); }
 .status-pulse { animation: wsp-pulse 1.2s ease-in-out infinite; }
 @keyframes wsp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .card {
-  background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 12px 14px;
-  box-shadow: 0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.05);
-  max-width: 240px; font-size: 12px; color: #171717;
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.04);
+  width: 288px; color: var(--foreground); overflow: hidden;
 }
-.card h1 { font-size: 13px; margin: 0 0 4px; font-weight: 600; color: #171717; }
-.card p { margin: 0 0 8px; color: #737373; }
-.card button, .card a {
-  font-size: 12px; font-weight: 500; border: 1px solid #e5e5e5; background: #fff; border-radius: 8px;
-  padding: 5px 10px; cursor: pointer; color: #171717; text-decoration: none; display: inline-block;
+.panel-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; }
+.panel-head .title { font-size: 14px; font-weight: 500; white-space: nowrap; }
+.panel-head .overall { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
+.sep { height: 1px; background: var(--border); }
+.rows { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
+.row { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
+.row .label { color: var(--muted-foreground); }
+.row .val { display: flex; align-items: center; gap: 6px; }
+.pip { width: 6px; height: 6px; border-radius: 9999px; flex: none; }
+.pip-ok { background: var(--state-available); }
+.pip-warn { background: var(--state-ringing); }
+.pip-err { background: var(--state-breach); }
+.pip-idle { background: var(--state-offline); }
+.panel-foot { padding: 12px 16px; }
+.err-card { padding: 14px 16px; }
+.err-card h1 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+.err-card p { font-size: 13px; margin: 0 0 10px; color: var(--muted-foreground); }
+button.action {
+  font-size: 13px; font-weight: 500; border: 1px solid var(--border); background: var(--card);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--foreground);
 }
-.card button:hover, .card a:hover { background: #f5f5f5; }
-.row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
-.row .val { color: #737373; }
-.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.panel-head strong { font-size: 13px; }
-.panel-close { border: none; background: none; cursor: pointer; font-size: 14px; color: #737373; padding: 0 2px; }
-.panel-close:hover { color: #171717; }
-.panel-foot { margin-top: 8px; }
+button.action:hover { background: #f4f4f5; }
 `;
 
-// Hardware SIP desk phone (idle) and lifted handset (on a call), both drawn in lucide
-// conventions (24px grid, stroke 2, round caps). The desk-phone → handset swap is the
-// call-activity channel: the status dot only ever reports connection health.
-const PHONE_ICON = `
-<svg class="icon-idle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  <path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6Z"/>
-  <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/>
-  <path d="M9 12h.01M12 12h.01M15 12h.01M9 15.5h.01M12 15.5h.01M15 15.5h.01"/>
-</svg>
-<svg class="icon-call" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+// lucide "headset" (24px grid, stroke 2, round caps) — the host application uses the same
+// icon for its voice terminal affordance.
+const HEADSET_ICON = `
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M3 11h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>
+  <path d="M21 16v2a4 4 0 0 1-4 4h-5"/>
 </svg>`;
 
 // Connection health only — call activity never changes the dot.
@@ -132,12 +141,53 @@ function labelFor(state: DisplayState): string {
   }
 }
 
-const LINK_ROWS: Array<{ label: string; value: (l: LinkStatus) => string }> = [
-  { label: "SIP Registration", value: (l) => l.registration },
-  { label: "WebSocket", value: (l) => l.websocket },
-  { label: "Microphone", value: (l) => l.microphone },
-  { label: "Media", value: (l) => l.media }
+type Pip = "pip-ok" | "pip-warn" | "pip-err" | "pip-idle";
+
+// Raw link states are protocol words ("up", "ok"); the panel speaks the reader's language.
+const LINK_ROWS: Array<{ label: string; value: (l: LinkStatus) => { text: string; pip: Pip } }> = [
+  {
+    label: "SIP registration",
+    value: (l) =>
+      l.registration === "up"
+        ? { text: "Registered", pip: "pip-ok" }
+        : l.registration === "connecting"
+          ? { text: "Connecting", pip: "pip-warn" }
+          : { text: "Not registered", pip: "pip-err" }
+  },
+  {
+    label: "WebSocket",
+    value: (l) =>
+      l.websocket === "up"
+        ? { text: "Connected", pip: "pip-ok" }
+        : l.websocket === "connecting"
+          ? { text: "Connecting", pip: "pip-warn" }
+          : { text: "Disconnected", pip: "pip-err" }
+  },
+  {
+    label: "Microphone",
+    value: (l) =>
+      l.microphone === "ok"
+        ? { text: "Ready", pip: "pip-ok" }
+        : l.microphone === "blocked"
+          ? { text: "Blocked", pip: "pip-err" }
+          : { text: "Unknown", pip: "pip-idle" }
+  },
+  {
+    label: "Media",
+    value: (l) =>
+      l.media === "ok"
+        ? { text: "Active", pip: "pip-ok" }
+        : l.media === "failed"
+          ? { text: "Failed", pip: "pip-err" }
+          : { text: "Idle", pip: "pip-ok" }
+  }
 ];
+
+function pip(cls: Pip): HTMLElement {
+  const el = document.createElement("span");
+  el.className = `pip ${cls}`;
+  return el;
+}
 
 export class WebSipPhoneView {
   readonly dot: HTMLElement;
@@ -147,7 +197,10 @@ export class WebSipPhoneView {
   private state: DisplayState | null = null;
   private panelOpen = false;
 
-  constructor(host: HTMLElement, private onIntent: (intent: UiIntent) => void) {
+  constructor(
+    private host: HTMLElement,
+    private onIntent: (intent: UiIntent) => void
+  ) {
     this.shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = STYLE;
@@ -158,9 +211,9 @@ export class WebSipPhoneView {
     this.dot = document.createElement("button");
     this.dot.className = "dot";
     this.dot.setAttribute("data-role", "dot");
-    this.dot.innerHTML = PHONE_ICON;
+    this.dot.innerHTML = HEADSET_ICON;
     this.statusDot = document.createElement("span");
-    this.statusDot.className = "status status-off";
+    this.statusDot.className = "status status-err";
     this.statusDot.setAttribute("data-role", "status-dot");
     this.dot.appendChild(this.statusDot);
     this.dot.addEventListener("click", () => {
@@ -169,6 +222,26 @@ export class WebSipPhoneView {
       }
       this.panelOpen = !this.panelOpen;
       this.render();
+    });
+
+    // Popover dismissal: the panel has no close button (matching the host application), so
+    // clicking away or pressing Escape must close it. Events outside the shadow root retarget
+    // to the host element, so containment covers clicks on the widget itself.
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (this.panelOpen && !host.contains(e.target as Node)) {
+          this.panelOpen = false;
+          this.render();
+        }
+      },
+      true
+    );
+    document.addEventListener("keydown", (e) => {
+      if (this.panelOpen && e.key === "Escape") {
+        this.panelOpen = false;
+        this.render();
+      }
     });
   }
 
@@ -190,7 +263,7 @@ export class WebSipPhoneView {
     if (state.error) {
       this.wrap.appendChild(this.errorCard(state.error));
     } else if (this.panelOpen) {
-      this.wrap.appendChild(this.panel(state.link));
+      this.wrap.appendChild(this.panel(state));
     }
 
     const { cls, pulse } = dotFor(state);
@@ -205,7 +278,7 @@ export class WebSipPhoneView {
   private errorCard(code: ErrorCode): HTMLElement {
     const copy = ERROR_COPY[code];
     const card = document.createElement("div");
-    card.className = "card";
+    card.className = "card err-card";
     card.setAttribute("data-role", "error-card");
     card.setAttribute("role", "alert");
     const h = document.createElement("h1");
@@ -213,6 +286,7 @@ export class WebSipPhoneView {
     const p = document.createElement("p");
     p.textContent = copy.detail;
     const btn = document.createElement("button");
+    btn.className = "action";
     btn.setAttribute("data-role", "error-action");
     btn.textContent = copy.action;
     btn.addEventListener("click", () => this.onIntent(copy.intent));
@@ -220,7 +294,7 @@ export class WebSipPhoneView {
     return card;
   }
 
-  private panel(link: LinkStatus): HTMLElement {
+  private panel(state: DisplayState): HTMLElement {
     const panel = document.createElement("div");
     panel.className = "card";
     panel.setAttribute("data-role", "panel");
@@ -229,35 +303,46 @@ export class WebSipPhoneView {
 
     const head = document.createElement("div");
     head.className = "panel-head";
-    const title = document.createElement("strong");
+    const title = document.createElement("span");
+    title.className = "title";
     title.textContent = "Voice connection";
-    const close = document.createElement("button");
-    close.className = "panel-close";
-    close.setAttribute("data-role", "panel-close");
-    close.setAttribute("aria-label", "Close");
-    close.textContent = "✕";
-    close.addEventListener("click", () => {
-      this.panelOpen = false;
-      this.render();
-    });
-    head.append(title, close);
+    const overall = document.createElement("span");
+    overall.className = "overall";
+    overall.setAttribute("data-role", "panel-overall");
+    const { cls } = dotFor(state);
+    overall.append(pip(cls.replace("status-", "pip-") as Pip), document.createTextNode(labelFor(state)));
+    head.append(title, overall);
     panel.appendChild(head);
 
+    const sep = document.createElement("div");
+    sep.className = "sep";
+    panel.appendChild(sep);
+
+    const rows = document.createElement("div");
+    rows.className = "rows";
     for (const row of LINK_ROWS) {
       const div = document.createElement("div");
       div.className = "row";
       const label = document.createElement("span");
+      label.className = "label";
       label.textContent = row.label;
       const val = document.createElement("span");
       val.className = "val";
-      val.textContent = row.value(link);
+      const { text, pip: pipCls } = row.value(state.link);
+      val.append(pip(pipCls), document.createTextNode(text));
       div.append(label, val);
-      panel.appendChild(div);
+      rows.appendChild(div);
     }
+    panel.appendChild(rows);
+
+    const sep2 = document.createElement("div");
+    sep2.className = "sep";
+    panel.appendChild(sep2);
 
     const foot = document.createElement("div");
     foot.className = "panel-foot";
     const settings = document.createElement("button");
+    settings.className = "action";
     settings.textContent = "Settings";
     settings.addEventListener("click", () => this.onIntent({ kind: "openOptions", section: "account" }));
     foot.appendChild(settings);

@@ -73,16 +73,68 @@ describe("voice connection panel", () => {
     view.update(READY);
     (root().querySelector("[data-role=dot]") as HTMLElement).click();
     const panel = root().querySelector("[data-role=panel]")!;
-    for (const row of ["SIP Registration", "WebSocket", "Microphone", "Media"]) {
+    for (const row of ["SIP registration", "WebSocket", "Microphone", "Media"]) {
       expect(panel.textContent).toContain(row);
     }
     expect(panel.querySelectorAll("button[data-role=call-control]").length).toBe(0);
   });
-  it("close button hides the panel", () => {
+  it("clicking the trigger again hides the panel", () => {
+    view.update(READY);
+    const trigger = root().querySelector("[data-role=dot]") as HTMLElement;
+    trigger.click();
+    expect(root().querySelector("[data-role=panel]")).toBeTruthy();
+    trigger.click();
+    expect(root().querySelector("[data-role=panel]")).toBeNull();
+  });
+
+  it("clicking outside the widget dismisses the panel", () => {
     view.update(READY);
     (root().querySelector("[data-role=dot]") as HTMLElement).click();
-    (root().querySelector("[data-role=panel-close]") as HTMLElement).click();
+    // jsdom has no PointerEvent constructor; the listener only reads type and target.
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     expect(root().querySelector("[data-role=panel]")).toBeNull();
+  });
+
+  it("Escape dismisses the panel", () => {
+    view.update(READY);
+    (root().querySelector("[data-role=dot]") as HTMLElement).click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(root().querySelector("[data-role=panel]")).toBeNull();
+  });
+
+  it("a pointerdown on the widget itself leaves the panel open", () => {
+    view.update(READY);
+    (root().querySelector("[data-role=dot]") as HTMLElement).click();
+    host.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(root().querySelector("[data-role=panel]")).toBeTruthy();
+  });
+
+  it("humanizes link states and echoes the overall status in the header", () => {
+    view.update(READY);
+    (root().querySelector("[data-role=dot]") as HTMLElement).click();
+    const panel = root().querySelector("[data-role=panel]")!;
+    const text = panel.textContent ?? "";
+    for (const value of ["Registered", "Connected", "Ready", "Idle"]) {
+      expect(text).toContain(value);
+    }
+    // No protocol jargon leaks into the panel.
+    for (const raw of ["up", "ok", "idle "]) {
+      expect(panel.querySelector(".val")?.textContent).not.toBe(raw);
+    }
+    expect(panel.querySelector("[data-role=panel-overall]")?.textContent).toContain("Ready");
+  });
+
+  it("reports degraded links with their own copy", () => {
+    view.update({
+      ...READY,
+      runtime: RuntimeState.Connecting,
+      link: { registration: "down", websocket: "connecting", microphone: "blocked", media: "failed" }
+    });
+    (root().querySelector("[data-role=dot]") as HTMLElement).click();
+    const text = root().querySelector("[data-role=panel]")?.textContent ?? "";
+    for (const value of ["Not registered", "Connecting", "Blocked", "Failed"]) {
+      expect(text).toContain(value);
+    }
   });
 });
 
@@ -133,11 +185,10 @@ describe("connection dot (health channel)", () => {
 describe("call activity (button channel)", () => {
   const button = () => root().querySelector("[data-role=dot]") as HTMLElement;
 
-  it("shows the desk-phone icon on a plain white button when idle", () => {
+  it("shows the headset icon on a plain button when idle", () => {
     view.update(READY);
     expect(button().className).not.toContain("in-call");
-    expect(button().querySelector("svg.icon-idle")).toBeTruthy();
-    expect(button().querySelector("svg.icon-call")).toBeTruthy();
+    expect(button().querySelector("svg")).toBeTruthy();
   });
 
   it("switches to the in-call style during a call and labels it", () => {
