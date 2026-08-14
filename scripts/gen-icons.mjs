@@ -1,53 +1,24 @@
-import { PNG } from "pngjs";
+import { Resvg } from "@resvg/resvg-js";
 import { mkdirSync, writeFileSync } from "node:fs";
 
-// Desk-phone glyph matching the in-page widget: handset bar + body with keypad,
-// green status dot top-right. Drawn per-pixel from shape predicates.
+// Extension icons mirror the in-page widget: the lucide "headset" glyph (identical path to
+// the one rendered in src/content/view.ts) with the green status dot at its top-right.
+// Rasterized from SVG so every size stays crisp and the glyph never drifts from the UI.
+// The viewBox padding keeps the artwork inside ~a 96px square at 128px, per store guidance.
 
-const PHONE = [64, 64, 64, 255]; // neutral-700
-const GREEN = [34, 197, 94, 255]; // green-500
-const WHITE = [255, 255, 255, 255];
-
-function inRoundedRect(x, y, x0, y0, x1, y1, r) {
-  if (x < x0 || x > x1 || y < y0 || y > y1) return false;
-  const cx = Math.max(x0 + r, Math.min(x, x1 - r));
-  const cy = Math.max(y0 + r, Math.min(y, y1 - r));
-  return Math.hypot(x - cx, y - cy) <= r || (x >= x0 + r && x <= x1 - r) || (y >= y0 + r && y <= y1 - r);
-}
-
-function drawIcon(size) {
-  const png = new PNG({ width: size, height: size });
-  const s = (f) => f * size;
-  const keypadCols = [0.36, 0.5, 0.64].map(s);
-  const keypadRows = [0.52, 0.66].map(s);
-  const dotC = { x: s(0.8), y: s(0.2) };
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const idx = (size * y + x) << 2;
-      const px = x + 0.5;
-      const py = y + 0.5;
-      let rgba = [0, 0, 0, 0];
-
-      const handset = inRoundedRect(px, py, s(0.08), s(0.14), s(0.92), s(0.32), s(0.08));
-      const body = inRoundedRect(px, py, s(0.2), s(0.32), s(0.8), s(0.9), s(0.08));
-      if (handset || body) rgba = PHONE;
-
-      const keypad = keypadCols.some((cx) => keypadRows.some((cy) => Math.hypot(px - cx, py - cy) <= s(0.04)));
-      if (keypad) rgba = WHITE;
-
-      const dDot = Math.hypot(px - dotC.x, py - dotC.y);
-      if (dDot <= s(0.19)) rgba = WHITE; // ring separating dot from handset
-      if (dDot <= s(0.15)) rgba = GREEN;
-
-      [png.data[idx], png.data[idx + 1], png.data[idx + 2], png.data[idx + 3]] = rgba;
-    }
-  }
-  return PNG.sync.write(png);
-}
+const ICON_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2.5 -2.5 29 29">
+  <g fill="none" stroke="#404040" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 11h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>
+    <path d="M21 16v2a4 4 0 0 1-4 4h-5"/>
+  </g>
+  <circle cx="20.5" cy="3.5" r="4.4" fill="#ffffff"/>
+  <circle cx="20.5" cy="3.5" r="3.2" fill="#16a34a"/>
+</svg>`;
 
 mkdirSync("static/icons", { recursive: true });
 for (const size of [16, 48, 128]) {
-  writeFileSync(`static/icons/icon-${size}.png`, drawIcon(size));
+  const png = new Resvg(ICON_SVG, { fitTo: { mode: "width", value: size } }).render().asPng();
+  writeFileSync(`static/icons/icon-${size}.png`, png);
 }
 console.log("Icons written to static/icons/");

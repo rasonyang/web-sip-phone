@@ -13,6 +13,7 @@
     "sip.js": "github:rasonyang/SIP.js#82b209d1a4dc7eb175a0c59b70d4a6faea13cef0"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/chrome": "^0.0.270",
     "esbuild": "^0.23.0",
     "jsdom": "^24.1.0",
