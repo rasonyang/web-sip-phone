@@ -36,8 +36,10 @@ export const ERROR_COPY: Record<ErrorCode, { title: string; detail: string; acti
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+/* The wrap is exactly the dot: the widget is dragged freely on both axes, so its host box must
+   stay a fixed 36px square regardless of whether a panel is open. The panel floats out of flow. */
 .wrap {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  position: relative; width: 36px; height: 36px;
   --card: #fff; --foreground: #18181b; --muted-foreground: #71717a; --border: #e5e7eb;
   --state-available: #16a34a; --state-oncall: #4f46e5; --state-ringing: #f59e0b;
   --state-breach: #dc2626; --state-offline: #d4d4d8;
@@ -64,10 +66,15 @@ const STYLE = `
 .status-pulse { animation: wsp-pulse 1.2s ease-in-out infinite; }
 @keyframes wsp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .card {
-  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  position: absolute; background: var(--card); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.04);
   width: 288px; color: var(--foreground); overflow: hidden;
 }
+/* The panel opens toward the middle of the viewport so it never lands off screen. */
+.wrap.card-below .card { top: 42px; }
+.wrap.card-above .card { bottom: 42px; }
+.wrap.card-left .card { left: 0; }
+.wrap.card-right .card { right: 0; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; }
 .panel-head .title { font-size: 14px; font-weight: 500; white-space: nowrap; }
 .panel-head .overall { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
@@ -261,8 +268,10 @@ export class WebSipPhoneView {
     this.wrap.replaceChildren();
 
     if (state.error) {
+      this.wrap.className = `wrap ${this.cardPlacement()}`;
       this.wrap.appendChild(this.errorCard(state.error));
     } else if (this.panelOpen) {
+      this.wrap.className = `wrap ${this.cardPlacement()}`;
       this.wrap.appendChild(this.panel(state));
     }
 
@@ -273,6 +282,18 @@ export class WebSipPhoneView {
     this.dot.setAttribute("aria-label", `Web SIP Phone status: ${label}`);
     this.dot.title = label;
     this.wrap.appendChild(this.dot);
+  }
+
+  /**
+   * The widget can be parked anywhere, so the card has to pick its side at open time: it drops
+   * below the dot in the top half of the viewport, rises above it in the bottom half, and aligns
+   * its far edge with the dot so the 288px card grows toward the middle of the screen.
+   */
+  private cardPlacement(): string {
+    const r = this.dot.getBoundingClientRect();
+    const vertical = r.top + r.height / 2 < window.innerHeight / 2 ? "card-below" : "card-above";
+    const horizontal = r.left + r.width / 2 < window.innerWidth / 2 ? "card-left" : "card-right";
+    return `${vertical} ${horizontal}`;
   }
 
   private errorCard(code: ErrorCode): HTMLElement {

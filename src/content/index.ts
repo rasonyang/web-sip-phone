@@ -1,7 +1,7 @@
-import type { DotPosition } from "../shared/config.js";
+import type { DotPosition, StoredDotPosition } from "../shared/config.js";
 import { isMsg, type Msg, type TabState } from "../shared/messages.js";
 import { RuntimeState, type DisplayState } from "../shared/state.js";
-import { applyPosition, snapToEdge } from "./drag.js";
+import { applyPosition, clampPixels, positionFromPixels } from "./drag.js";
 import { WebSipPhoneView, type UiIntent } from "./view.js";
 
 // Top-level pages only; dynamic registration already excludes iframes, this is defense in depth.
@@ -40,7 +40,7 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
 
   // Set once any TabState (initial fetch or broadcast) has been applied; gates the initial-fetch retry loop.
   let gotState = false;
-  let lastPos: DotPosition | null = null;
+  let lastPos: StoredDotPosition | null = null;
   let lastState: DisplayState | null = null;
   function applyTabState(ts: TabState): void {
     const firstState = !gotState;
@@ -124,9 +124,17 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
     }
     if (Math.hypot(e.clientX - startX, e.clientY - startY) > 4) {
       moved = true;
-      host.style.top = `${e.clientY - offsetY}px`;
-      host.style.left = `${e.clientX - offsetX}px`;
+      // Free movement on both axes, clamped so the widget can never be dragged off screen.
+      const { left, top } = clampPixels(
+        e.clientX - offsetX,
+        e.clientY - offsetY,
+        window.innerWidth,
+        window.innerHeight
+      );
+      host.style.top = `${top}px`;
+      host.style.left = `${left}px`;
       host.style.right = "auto";
+      host.style.bottom = "auto";
     }
   });
   view.dot.addEventListener("pointerup", () => {
@@ -136,12 +144,7 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
     dragging = false;
     if (moved) {
       const r = host.getBoundingClientRect();
-      const pos: DotPosition = snapToEdge(
-        r.left + r.width / 2,
-        r.top + r.height / 2,
-        window.innerWidth,
-        window.innerHeight
-      );
+      const pos: DotPosition = positionFromPixels(r.left, r.top, window.innerWidth, window.innerHeight);
       applyPosition(host, pos);
       lastPos = pos;
       send({ target: "background", type: "ui/savePosition", pos });
@@ -153,6 +156,14 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
       view.dot.addEventListener("click", swallowClick, { capture: true, once: true });
     }
   });
+  // Positions are stored as fractions of the free space, so re-applying on resize keeps a
+  // corner-parked widget in its corner and never strands it outside a shrunken viewport.
+  window.addEventListener("resize", () => {
+    if (!dragging) {
+      applyPosition(host, lastPos);
+    }
+  });
+
   view.dot.addEventListener("pointercancel", () => {
     if (!dragging) {
       return;

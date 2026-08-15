@@ -116,7 +116,7 @@ Responsibilities:
 * Renders the Web SIP Phone status dot using Shadow DOM
 * Displays the global voice-link state (SIP registration, WSS, microphone, media) — never call details
 * Receives Service Worker broadcasts
-* Handles expand (error/status panel), collapse, drag with edge snapping, and opening settings
+* Handles expand (error/status panel), collapse, free dragging, and opening settings
 * Registers a `beforeunload` leave confirmation when necessary
 
 The Content Script must not:
@@ -773,9 +773,15 @@ UI copy is in English for version 1.
 
 ## 14.2 Position and Dragging
 
-* Default dock: the middle-lower area of the page's right edge.
-* Supports dragging; on release it snaps to the nearest left or right page edge.
+* Default dock: the page's top-right corner, matching where the host application puts its own
+  floating voice button.
+* Supports free dragging on both axes; the widget is clamped to stay fully on screen, and no edge
+  snapping is applied on release.
+* The position is stored as a fraction of the free viewport space, so a widget parked in a corner
+  stays in that corner when the window is resized.
 * The last dragged position is saved globally and restored; per-site positions are not needed.
+* The status panel opens toward the middle of the viewport (below the widget in the top half of the
+  page, above it in the bottom half) so it is never clipped by an edge.
 * Web SIP Phone needs a sufficiently high z-index, but must not interfere with Chrome's own UI.
 
 ## 14.3 Normal State (Collapsed)
@@ -1212,8 +1218,8 @@ All of the following must be satisfied:
 16. An unexpected second INVITE returns 486 Busy Here.
 17. Web SIP Phone stays collapsed as a small status dot in all normal states, including during calls, and never shows numbers, call duration, or call controls.
 18. Web SIP Phone auto-expands only on registration failure, WSS loss, microphone failure, or media failure, showing an error name, one line of explanation, and one recovery action.
-19. Web SIP Phone docks at the middle-lower right edge by default.
-20. Web SIP Phone supports dragging with left/right edge snapping, persists the last position, and clicking it opens the `Voice connection` panel showing only SIP Registration, WebSocket, Microphone, and Media status.
+19. Web SIP Phone docks at the top-right corner by default.
+20. Web SIP Phone supports free dragging on both axes (clamped to the viewport), persists the last position, and clicking it opens the `Voice connection` panel showing only SIP Registration, WebSocket, Microphone, and Media status.
 21. The UI contains no call control buttons.
 22. Registration failure, connection loss, media failure, and microphone failure all have concise messages.
 23. Media failure offers a Configure TURN entry point.

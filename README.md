@@ -1,10 +1,11 @@
 # Web SIP Phone
 
-A Chrome extension that maintains a WebRTC SIP voice link and shows a small draggable **desk-phone
-icon** with a status dot (top-right corner) on configured business pages:
+A Chrome extension that maintains a WebRTC SIP voice link and shows a small draggable **headset
+button** with a status dot in its top-right corner on configured business pages. The dot reports
+connection health only; call activity is shown on the button itself (indigo while on a call):
 
 - 🟢 **green** — registered and ready
-- 🟡 **amber** — a call is in progress (solid), or connecting/reconnecting (blinking)
+- 🟡 **amber, blinking** — connecting or reconnecting
 - 🔴 **red** — not connected / failed
 
 The widget follows the shadcn/ui neutral look (Inter, lucide-style icon) so it blends into
@@ -68,7 +69,7 @@ Web SIP Phone runs four cooperating pieces, all in `src/`:
   driven by INVITE, CANCEL, BYE, and BroadSoft `NOTIFY`/`Event: talk`/`Event: hold`. State changes
   are broadcast to the service worker; nothing here is rendered directly.
 - **Content script** (`src/content`) — injected only into top-level Allow Site pages (never
-  iframes). Renders the Web SIP Phone dot in a Shadow DOM, handles drag/edge-snap and expand/collapse,
+  iframes). Renders the Web SIP Phone dot in a Shadow DOM, handles dragging and expand/collapse,
   and registers a best-effort `beforeunload` leave confirmation when a call is in progress. It
   never holds the SIP password, never runs SIP.js, never opens a WebSocket, and never touches the
   microphone directly.

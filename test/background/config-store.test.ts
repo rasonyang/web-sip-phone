@@ -55,11 +55,11 @@ describe("config store", () => {
     // second write's storage read happening after the first's write is trivially safe:
     // neither can clobber the other's field.
     await Promise.all([
-      saveConfig({ dotPosition: { side: "left", y: 0.5 } }),
+      saveConfig({ dotPosition: { x: 0.25, y: 0.5 } }),
       saveConfig({ turn: { enabled: true, url: "turn:t", username: "tu", credential: "tc" } })
     ]);
     const cfg = await loadConfig();
-    expect(cfg.dotPosition).toEqual({ side: "left", y: 0.5 });
+    expect(cfg.dotPosition).toEqual({ x: 0.25, y: 0.5 });
     expect(cfg.turn).toEqual({ enabled: true, url: "turn:t", username: "tu", credential: "tc" });
   });
 });

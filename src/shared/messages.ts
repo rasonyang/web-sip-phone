@@ -1,4 +1,4 @@
-import type { DotPosition } from "./config.js";
+import type { DotPosition, StoredDotPosition } from "./config.js";
 import type { DisplayState, ErrorCode, LinkStatus } from "./state.js";
 
 export type Phase = "stopped" | "connecting" | "registering" | "ready";
@@ -22,7 +22,7 @@ export interface RuntimeConfig {
 export interface TabState {
   state: DisplayState;
   guardUnload: boolean;
-  pos: DotPosition | null;
+  pos: StoredDotPosition | null;
 }
 
 export type Msg =
@@ -35,7 +35,7 @@ export type Msg =
   | { target: "background"; type: "ui/getState" }
   | { target: "background"; type: "ui/savePosition"; pos: DotPosition }
   | { target: "background"; type: "config/changed" }
-  | { target: "content"; type: "state/update"; state: DisplayState; guardUnload: boolean; pos: DotPosition | null }
+  | { target: "content"; type: "state/update"; state: DisplayState; guardUnload: boolean; pos: StoredDotPosition | null }
   | { target: "options"; type: "state/update"; state: DisplayState };
 
 export function isMsg(value: unknown): value is Msg {

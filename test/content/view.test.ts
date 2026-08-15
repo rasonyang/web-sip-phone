@@ -87,6 +87,21 @@ describe("voice connection panel", () => {
     expect(root().querySelector("[data-role=panel]")).toBeNull();
   });
 
+  it("opens toward the middle of the viewport", () => {
+    view.update(READY);
+    const dot = root().querySelector("[data-role=dot]") as HTMLElement;
+    const wrap = () => root().querySelector(".wrap") as HTMLElement;
+    // Parked top-left (jsdom reports a zero rect) → the card drops down and to the right.
+    dot.click();
+    expect(wrap().className).toBe("wrap card-below card-left");
+    dot.click();
+    // Parked bottom-right → the card rises and hangs off the dot's right edge.
+    dot.getBoundingClientRect = () =>
+      ({ top: 700, left: 900, width: 36, height: 36 }) as DOMRect;
+    dot.click();
+    expect(wrap().className).toBe("wrap card-above card-right");
+  });
+
   it("clicking outside the widget dismisses the panel", () => {
     view.update(READY);
     (root().querySelector("[data-role=dot]") as HTMLElement).click();

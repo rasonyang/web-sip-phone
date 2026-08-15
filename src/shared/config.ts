@@ -12,16 +12,25 @@ export interface TurnConfig {
 }
 
 export interface DotPosition {
-  side: "left" | "right";
-  /** Fraction of viewport height, 0–1. */
+  /** Fraction of the free horizontal space, 0 = flush left, 1 = flush right. */
+  x: number;
+  /** Fraction of the free vertical space, 0 = flush top, 1 = flush bottom. */
   y: number;
 }
+
+/** Pre-1.0.3 shape: edge-docked, vertical freedom only. Still readable from storage. */
+export interface LegacyDotPosition {
+  side: "left" | "right";
+  y: number;
+}
+
+export type StoredDotPosition = DotPosition | LegacyDotPosition;
 
 export interface WebSipPhoneConfig {
   account: AccountConfig | null;
   allowSites: string[];
   turn: TurnConfig | null;
-  dotPosition: DotPosition | null;
+  dotPosition: StoredDotPosition | null;
 }
 
 export const DEFAULT_CONFIG: WebSipPhoneConfig = {
