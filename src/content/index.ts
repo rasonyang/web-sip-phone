@@ -12,13 +12,34 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
 
   const send = (msg: Msg): void => void chrome.runtime.sendMessage(msg).catch(() => {});
 
-  const view = new WebSipPhoneView(host, (intent: UiIntent) => {
-    if (intent.kind === "retry") {
-      send({ target: "background", type: "ui/retry" });
-    } else {
-      send({ target: "background", type: "ui/openOptions", section: intent.section });
-    }
-  });
+  const view = new WebSipPhoneView(
+    host,
+    (intent: UiIntent) => {
+      switch (intent.kind) {
+        case "retry":
+          send({ target: "background", type: "ui/retry" });
+          break;
+        case "panelState":
+          // Drives microphone metering in the offscreen document — the content script must
+          // never touch the microphone itself.
+          send({ target: "background", type: "ui/panelState", open: intent.open });
+          break;
+        case "testMic":
+          // The outcome arrives with the next status broadcast, not as a reply (see the
+          // service worker's ui/testMic handler); the view resolves its own pending state.
+          send({ target: "background", type: "ui/testMic" });
+          break;
+        case "micBlocked":
+          // An offscreen document cannot show a permission prompt; only the Options page can,
+          // so a failed test hands the user straight to it.
+          send({ target: "background", type: "ui/openOptions", section: "advanced" });
+          break;
+        default:
+          send({ target: "background", type: "ui/openOptions", section: intent.section });
+      }
+    },
+    { version: chrome.runtime.getManifest().version }
+  );
 
   let guardArmed = false;
   const unloadGuard = (e: BeforeUnloadEvent): void => {
@@ -87,8 +108,13 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
   window.addEventListener("focus", maybeNudgeRecovery);
 
   chrome.runtime.onMessage.addListener((raw) => {
-    if (isMsg(raw) && raw.target === "content" && raw.type === "state/update") {
-      applyTabState({ state: raw.state, guardUnload: raw.guardUnload, pos: raw.pos });
+    if (isMsg(raw) && raw.target === "content") {
+      if (raw.type === "state/update") {
+        applyTabState({ state: raw.state, guardUnload: raw.guardUnload, pos: raw.pos });
+      } else if (raw.type === "mic/level") {
+        // Arrives at 10 Hz while the panel is open; updates the meter bar only.
+        view.setMicLevel(raw.level);
+      }
     }
     return false;
   });

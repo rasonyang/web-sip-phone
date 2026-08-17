@@ -48,11 +48,62 @@ export const IDLE_LINK: LinkStatus = {
   media: "idle"
 };
 
+/** Where the reconnect/re-register ladder currently stands, so the panel can count down to it. */
+export interface ReconnectProgress {
+  /** 1-based number of the attempt that is about to run. */
+  attempt: number;
+  nextAttemptAt: number;
+}
+
+/**
+ * The active fault, with the server's own words. `reasonPhrase` is diagnostic detail
+ * ("403 Forbidden", "device in use"): it turns "Registration failed" into copy the user can
+ * act on, and it is the one place a SIP status code is allowed to surface (design §14.4).
+ */
+export interface FaultDetail {
+  code: ErrorCode;
+  reasonPhrase: string;
+}
+
+/**
+ * Identity and risk context for the status panel. The panel answers "which extension am I,
+ * on which server, and what is likely to break" — none of this is derivable from LinkStatus.
+ * Never carries the SIP password.
+ */
+export interface StatusDetails {
+  /** SIP account (extension) — the username only, never credentials. */
+  account: string | null;
+  domain: string | null;
+  /** Epoch ms at which the current registration expires, for the countdown. */
+  registrationExpiresAt: number | null;
+  reconnect: ReconnectProgress | null;
+  turnConfigured: boolean;
+  micDeviceLabel: string | null;
+  /** 0..1 RMS, sampled in the offscreen document; live only while a panel is expanded. */
+  micLevel: number | null;
+  lastError: FaultDetail | null;
+}
+
+export const EMPTY_DETAILS: StatusDetails = {
+  account: null,
+  domain: null,
+  registrationExpiresAt: null,
+  reconnect: null,
+  turnConfigured: false,
+  micDeviceLabel: null,
+  micLevel: null,
+  lastError: null
+};
+
 export interface DisplayState {
   runtime: RuntimeState;
   error: ErrorCode | null;
   reconnecting: boolean;
-  /** A call is in progress — the status dot shows busy (amber) instead of ready (green). */
+  /**
+   * A call is in progress. The one call-derived fact the UI receives: it tints the button and its
+   * tooltip, and arms the unload guard. The status badge keeps reporting connection health.
+   */
   busy: boolean;
   link: LinkStatus;
+  details: StatusDetails;
 }

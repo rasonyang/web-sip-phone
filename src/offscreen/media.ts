@@ -15,6 +15,21 @@ export async function probeMicPermission(): Promise<"granted" | "blocked"> {
   }
 }
 
+/**
+ * Label of the microphone the runtime would use. Device labels are only exposed once mic
+ * permission has been granted, so this returns null when blocked — which is exactly when the
+ * panel has something more useful to say than a device name.
+ */
+export async function readMicLabel(): Promise<string | null> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const input = devices.find((d) => d.kind === "audioinput" && d.label);
+    return input?.label ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function attachRemoteAudio(pc: RTCPeerConnection, audio: HTMLAudioElement): void {
   const refresh = (): void => {
     const tracks = pc

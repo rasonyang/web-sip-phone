@@ -1,16 +1,24 @@
 import { isMsg, type Msg } from "../shared/messages.js";
+import { MicMeter } from "./mic-meter.js";
 import { realUaFactory } from "./sipjs-adapter.js";
 import { SipRuntime } from "./sip-runtime.js";
 
 const audio = document.getElementById("remote-audio") as HTMLAudioElement;
 
-const runtime = new SipRuntime({
+const send = (msg: Msg): void => void chrome.runtime.sendMessage(msg).catch(() => {});
+
+// Levels ride their own message: at 10 Hz they must not drag a full status broadcast (and the
+// service worker's runtime re-evaluation) along with them.
+const meter: MicMeter = new MicMeter({
+  getExistingTrack: (): MediaStreamTrack | null => runtime.localAudioTrack(),
+  onLevel: (level) => send({ target: "background", type: "offscreen/micLevel", level })
+});
+
+const runtime: SipRuntime = new SipRuntime({
   factory: realUaFactory,
   audio,
-  onStatus: (status) => {
-    const msg: Msg = { target: "background", type: "offscreen/status", status };
-    void chrome.runtime.sendMessage(msg).catch(() => {});
-  }
+  micLevel: (): number | null => meter.level(),
+  onStatus: (status) => send({ target: "background", type: "offscreen/status", status })
 });
 
 // Post-sleep recovery. System sleep cannot be detected from the socket side: FreeSWITCH
@@ -64,6 +72,16 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
       return true;
     case "runtime/retry":
       runtime.retry();
+      sendResponse(true);
+      return false;
+    case "runtime/testMic":
+      runtime
+        .testMic()
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ ok: false, label: null }));
+      return true;
+    case "runtime/micMeter":
+      meter.setEnabled(raw.on);
       sendResponse(true);
       return false;
   }

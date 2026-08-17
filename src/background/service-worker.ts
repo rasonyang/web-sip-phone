@@ -16,6 +16,13 @@ let runtimeStarted = false;
 /** Fingerprint of the config the runtime was started with; detects account/TURN edits while running. */
 let runtimeConfigKey: string | null = null;
 let evaluating = Promise.resolve();
+/**
+ * Tabs whose status panel is expanded. Microphone metering is expensive and only meaningful
+ * while somebody is watching a meter, so it runs exactly while this set is non-empty.
+ */
+const panelTabs = new Set<number>();
+/** Last metering state the offscreen runtime was told about, so we only send on a change. */
+let micMeterOn = false;
 
 function desiredRuntimeConfig(): RuntimeConfig {
   const account = config.account!;
@@ -27,8 +34,25 @@ function displayState() {
   return computeDisplayState({
     configured: isAccountComplete(config.account),
     allowTabCount: tracker.count(),
-    offscreen: offscreenStatus
+    offscreen: offscreenStatus,
+    identity: {
+      account: config.account?.username ?? null,
+      domain: config.account?.domain ?? null,
+      // "Configured" means calls can actually use it: an entry saved but switched off is not.
+      turnConfigured: Boolean(config.turn?.enabled && config.turn.url)
+    }
   });
+}
+
+/** Metering follows the panels: on while at least one is expanded, off the moment none are. */
+async function syncMicMeter(): Promise<void> {
+  const on = runtimeStarted && panelTabs.size > 0;
+  if (on === micMeterOn) {
+    return;
+  }
+  micMeterOn = on;
+  const msg: Msg = { target: "offscreen", type: "runtime/micMeter", on };
+  await chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
 function tabState(tabId: number): TabState {
@@ -63,6 +87,7 @@ function evaluate(): Promise<void> {
           await chrome.runtime.sendMessage(startMsg).catch(() => {});
           runtimeStarted = true;
           runtimeConfigKey = key;
+          micMeterOn = false; // a fresh runtime starts with metering off
         } else if (key !== runtimeConfigKey && !(offscreenStatus?.callInProgress ?? false)) {
           // Account/TURN changed while the runtime is up. SipRuntime.start() is a no-op
           // while running, so an explicit stop must precede the restart. Deferred while a
@@ -72,6 +97,7 @@ function evaluate(): Promise<void> {
           await chrome.runtime.sendMessage(stopMsg).catch(() => {});
           await chrome.runtime.sendMessage(startMsg).catch(() => {});
           runtimeConfigKey = key;
+          micMeterOn = false;
         }
       } else if (runtimeStarted) {
         const msg: Msg = { target: "offscreen", type: "runtime/stop" };
@@ -79,9 +105,12 @@ function evaluate(): Promise<void> {
         await closeOffscreen();
         runtimeStarted = false;
         runtimeConfigKey = null;
+        micMeterOn = false;
         offscreenStatus = null;
       }
       await broadcast();
+      // A runtime that has just (re)started knows nothing about the open panels.
+      await syncMicMeter();
     } catch (e) {
       console.warn("[WebSipPhone] evaluate failed", e);
     }
@@ -115,6 +144,13 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
   switch (msg.type) {
     case "offscreen/status":
       offscreenStatus = msg.status;
+      if (msg.status.phase === "stopped" && !msg.status.errors.includes("MICROPHONE_BLOCKED")) {
+        // The runtime stops itself when the microphone gate fails at start (design §6.1) and
+        // the worker would otherwise keep believing it is running. Once that blocker clears —
+        // typically the panel's "Test microphone" passing — it needs a fresh start.
+        runtimeStarted = false;
+        runtimeConfigKey = null;
+      }
       // evaluate() (which ends in a broadcast) rather than broadcast() directly, so a
       // config change deferred during a call is applied as soon as the call ends.
       await evaluate();
@@ -132,6 +168,36 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
     case "ui/savePosition":
       config = await saveConfig({ dotPosition: msg.pos });
       await broadcast();
+      break;
+    case "ui/panelState": {
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined) {
+        if (msg.open) {
+          panelTabs.add(tabId);
+        } else {
+          panelTabs.delete(tabId);
+        }
+        await syncMicMeter();
+      }
+      break;
+    }
+    case "ui/testMic":
+      // Deliberately fire-and-forget: the result comes back through the normal status
+      // broadcast (the offscreen runtime reports as soon as the test finishes), which every
+      // tab sees. A request/response round trip here is unreliable — `runtime.sendMessage`
+      // reaches every extension context, and a context that returns without responding can
+      // close the port before the offscreen document's async reply arrives.
+      void chrome.runtime.sendMessage({ target: "offscreen", type: "runtime/testMic" } satisfies Msg).catch(() => {});
+      break;
+    case "offscreen/micLevel":
+      // Deliberately not a full broadcast: levels arrive at 10 Hz and only interest the tabs
+      // that are actually showing a meter.
+      if (offscreenStatus) {
+        offscreenStatus = { ...offscreenStatus, micLevel: msg.level };
+      }
+      for (const tabId of panelTabs) {
+        void chrome.tabs.sendMessage(tabId, { target: "content", type: "mic/level", level: msg.level } satisfies Msg).catch(() => {});
+      }
       break;
     case "config/changed":
       config = await loadConfig();
@@ -153,6 +219,12 @@ async function doInit(): Promise<void> {
   config = await loadConfig();
   tracker = new TabTracker(() => config.allowSites);
   tracker.onChange(() => void evaluate());
+  // A closed tab takes its panel with it; otherwise metering would run for a ghost.
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (panelTabs.delete(tabId)) {
+      void syncMicMeter();
+    }
+  });
 
   chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     if (!isMsg(raw) || raw.target !== "background") {

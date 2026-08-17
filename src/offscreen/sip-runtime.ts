@@ -1,9 +1,9 @@
-import type { OffscreenStatus, Phase, RuntimeConfig } from "../shared/messages.js";
-import type { ErrorCode, LinkStatus } from "../shared/state.js";
-import { CallState } from "../shared/state.js";
+import type { MicTestResult, OffscreenStatus, Phase, RuntimeConfig } from "../shared/messages.js";
+import type { ErrorCode, FaultDetail, LinkStatus, ReconnectProgress } from "../shared/state.js";
+import { CallState, selectDisplayError } from "../shared/state.js";
 import { CallSessionManager, type InvitationLike } from "./call-session.js";
 import { diag } from "./diag-log.js";
-import { probeMicPermission } from "./media.js";
+import { MIC_CONSTRAINTS, probeMicPermission, readMicLabel } from "./media.js";
 
 export interface UaLike {
   start(): Promise<void>;
@@ -11,8 +11,19 @@ export interface UaLike {
   reconnect(): Promise<void>;
 }
 
+/** The parts of a SIP.js `IncomingResponse` this runtime reads. */
+export interface ResponseLike {
+  message: {
+    statusCode?: number;
+    reasonPhrase?: string;
+    getHeader?(name: string): string | undefined;
+  };
+}
+
 export interface RegistererLike {
-  register(opts?: { requestDelegate?: { onAccept?: () => void; onReject?: () => void } }): Promise<unknown>;
+  register(opts?: {
+    requestDelegate?: { onAccept?: (response?: ResponseLike) => void; onReject?: (response?: ResponseLike) => void };
+  }): Promise<unknown>;
   unregister(): Promise<unknown>;
 }
 
@@ -60,6 +71,33 @@ const LIVENESS_GAP_MULTIPLIER = 3;
 // credentials the periodic retry is harmless while the error card keeps telling the user.
 const REGISTER_RETRY_MS = 30000;
 
+/** RFC 3261 default when a 200 OK names no expiry of its own. */
+const DEFAULT_REGISTRATION_EXPIRES_S = 600;
+
+/**
+ * Seconds the server granted the registration, read from the 200 OK: the Expires header, or
+ * failing that the `expires` parameter on the returned Contact. Servers routinely shorten
+ * what the client asked for, so the panel must count down the server's number, not ours.
+ */
+export function parseExpiresSeconds(response?: ResponseLike): number {
+  const header = response?.message?.getHeader?.("expires");
+  const fromHeader = header !== undefined ? Number.parseInt(header, 10) : NaN;
+  if (Number.isFinite(fromHeader) && fromHeader > 0) {
+    return fromHeader;
+  }
+  const contact = response?.message?.getHeader?.("contact");
+  const match = contact?.match(/;\s*expires\s*=\s*(\d+)/i);
+  const fromContact = match ? Number.parseInt(match[1], 10) : NaN;
+  return Number.isFinite(fromContact) && fromContact > 0 ? fromContact : DEFAULT_REGISTRATION_EXPIRES_S;
+}
+
+/** "403 Forbidden" — the server's own words, for copy the user can act on. */
+function describeResponse(response?: ResponseLike): string {
+  const code = response?.message?.statusCode;
+  const phrase = response?.message?.reasonPhrase;
+  return [code, phrase].filter(Boolean).join(" ") || "no response from the server";
+}
+
 class ReconnectTimeoutError extends Error {
   constructor() {
     super(`reconnect attempt exceeded ${RECONNECT_ATTEMPT_TIMEOUT_MS}ms`);
@@ -95,6 +133,18 @@ export class SipRuntime {
   private running = false;
   private callInProgress = false;
   private micOk = false;
+  private micLabel: string | null = null;
+  /** Epoch ms the server's 200 OK said this registration lasts until. */
+  private registrationExpiresAt: number | null = null;
+  /** The pending reconnect or re-register attempt the panel counts down to. */
+  private reconnectProgress: ReconnectProgress | null = null;
+  private registerAttempts = 0;
+  /**
+   * Why each currently-raised error happened, in the server's or the browser's words. Keyed by
+   * code so the reported detail always belongs to the error the UI actually displays (which
+   * error that is, is decided by priority, not by which one happened last).
+   */
+  private errorReasons = new Map<ErrorCode, string>();
   /** Config the runtime was started with; needed to rebuild the UA after a wedged transport. */
   private config: RuntimeConfig | null = null;
   /** True while the current UA instance has never been start()ed — reconnect() on a fresh UA rejects. */
@@ -113,21 +163,51 @@ export class SipRuntime {
   private attemptInFlight = false;
   private attemptQueued = false;
 
-  constructor(private deps: { factory: UaFactory; audio: HTMLAudioElement; onStatus(s: OffscreenStatus): void }) {
+  constructor(
+    private deps: {
+      factory: UaFactory;
+      audio: HTMLAudioElement;
+      onStatus(s: OffscreenStatus): void;
+      /** Current microphone level, when a panel is expanded and metering is on. */
+      micLevel?(): number | null;
+    }
+  ) {
     this.sessions = new CallSessionManager({
       audio: deps.audio,
       onChange: (state, inProgress) => {
         this.callInProgress = inProgress;
         if (state === CallState.Dialing || state === CallState.Ringing) {
-          this.errors.delete("MEDIA_FAILED"); // new call: previous media failure no longer current
+          this.clearError("MEDIA_FAILED"); // new call: previous media failure no longer current
         }
         this.report();
       },
-      onMediaFailed: () => {
-        this.errors.add("MEDIA_FAILED");
+      onMediaFailed: (reason) => {
+        this.raiseError("MEDIA_FAILED", reason);
         this.report();
       }
     });
+  }
+
+  /** Records an error together with why it happened, for the panel's fault copy. */
+  private raiseError(code: ErrorCode, reason: string): void {
+    this.errors.add(code);
+    this.errorReasons.set(code, reason);
+  }
+
+  private clearError(code: ErrorCode): void {
+    this.errors.delete(code);
+    this.errorReasons.delete(code);
+  }
+
+  /** The fault the UI will display (highest priority), with its reason attached. */
+  private lastError(): FaultDetail | null {
+    const code = selectDisplayError([...this.errors]);
+    return code ? { code, reasonPhrase: this.errorReasons.get(code) ?? "" } : null;
+  }
+
+  /** The microphone track a live call already captured, for the offscreen level meter. */
+  localAudioTrack(): MediaStreamTrack | null {
+    return this.sessions.localAudioTrack();
   }
 
   async start(config: RuntimeConfig): Promise<void> {
@@ -136,12 +216,24 @@ export class SipRuntime {
       // its in-memory status copy is gone (it renders "Connecting…" until told otherwise)
       // and a steady runtime reports nothing on its own. Replay the current status so the
       // restarted worker resynchronizes instead of displaying a stale connecting state.
-      this.report();
-      return;
+      //
+      // Unless the config differs: a restarted worker also forgets which config the runtime
+      // was started with, so its own restart-on-change check cannot fire and a credential
+      // edit would be silently ignored while this runtime kept using the old password. The
+      // runtime is the only context that reliably knows what it is actually running.
+      const changed = JSON.stringify(this.config) !== JSON.stringify(config);
+      if (!changed || this.callInProgress) {
+        this.report(); // a settings edit must never drop a live call; it applies at the next start
+        return;
+      }
+      diag("sip", "runtime config changed under a running UA; restarting");
+      await this.stop();
     }
     this.running = true;
     this.errors.clear();
+    this.errorReasons.clear();
     this.attemptQueued = false;
+    this.registerAttempts = 0;
     const gen = ++this.generation;
 
     const mic = await probeMicPermission();
@@ -151,12 +243,13 @@ export class SipRuntime {
     this.micOk = mic === "granted";
     if (!this.micOk) {
       // Design §6.1: the SIP runtime starts only when the microphone is available.
-      this.errors.add("MICROPHONE_BLOCKED");
+      this.raiseError("MICROPHONE_BLOCKED", "permission not granted");
       this.phase = "stopped";
       this.running = false;
       this.report();
       return;
     }
+    this.micLabel = await readMicLabel();
 
     this.phase = "connecting";
     this.report();
@@ -192,27 +285,33 @@ export class SipRuntime {
     await this.registerer
       ?.register({
         requestDelegate: {
-          onAccept: () => {
+          onAccept: (response) => {
             if (gen !== this.generation) {
               return; // stale: superseded by stop()/a newer start() while REGISTER was pending
             }
             this.phase = "ready";
-            this.errors.delete("REGISTRATION_FAILED");
-            this.errors.delete("CONNECTION_LOST");
+            this.clearError("REGISTRATION_FAILED");
+            this.clearError("CONNECTION_LOST");
             this.reconnecting = false;
             this.attempts = 0;
+            this.registerAttempts = 0;
+            this.reconnectProgress = null;
+            this.registrationExpiresAt = Date.now() + parseExpiresSeconds(response) * 1000;
             this.report();
           },
-          onReject: () => {
+          onReject: (response) => {
             if (gen !== this.generation) {
               return;
             }
-            diag("sip", "REGISTER rejected");
-            this.errors.add("REGISTRATION_FAILED");
+            const reason = describeResponse(response);
+            diag("sip", "REGISTER rejected", { reason });
+            this.raiseError("REGISTRATION_FAILED", reason);
+            this.registrationExpiresAt = null;
             // Never leave a stale "ready" behind a rejected re-register.
             this.phase = "registering";
-            this.report();
+            // Schedule before reporting so the status already carries the retry countdown.
             this.scheduleRegisterRetry(gen);
+            this.report();
           }
         }
       })
@@ -221,10 +320,11 @@ export class SipRuntime {
           return;
         }
         diag("sip", "REGISTER send failed", { error: String(e) });
-        this.errors.add("REGISTRATION_FAILED");
+        this.raiseError("REGISTRATION_FAILED", "the REGISTER request could not be sent");
+        this.registrationExpiresAt = null;
         this.phase = "registering";
-        this.report();
         this.scheduleRegisterRetry(gen);
+        this.report();
       });
   }
 
@@ -235,6 +335,8 @@ export class SipRuntime {
     // Same jitter rationale as the reconnect ladder: after a server restart, every client's
     // failed registration would otherwise retry on the same 30s beat.
     const delay = REGISTER_RETRY_MS + Math.random() * REGISTER_RETRY_MS * BACKOFF_JITTER_FACTOR;
+    this.registerAttempts++;
+    this.reconnectProgress = { attempt: this.registerAttempts, nextAttemptAt: Date.now() + delay };
     this.registerRetryTimer = setTimeout(() => {
       this.registerRetryTimer = null;
       if (!this.running || gen !== this.generation || this.phase === "ready") {
@@ -322,8 +424,9 @@ export class SipRuntime {
     }
     diag("sip", "WSS disconnected", { error: String(error) });
     this.reconnecting = true;
+    this.registrationExpiresAt = null;
+    this.scheduleReconnect(); // before reporting, so the status carries the countdown
     this.report();
-    this.scheduleReconnect();
   }
 
   private scheduleReconnect(delayMs?: number): void {
@@ -333,6 +436,7 @@ export class SipRuntime {
     // Explicit delays (retry()/resync()/queued follow-ups pass 0) stay exact; only the
     // automatic backoff ladder gets jitter.
     const delay = delayMs ?? backoffDelayMs(this.attempts);
+    this.reconnectProgress = { attempt: this.attempts + 1, nextAttemptAt: Date.now() + delay };
     this.reconnectTimer = setTimeout(() => void this.attemptReconnect(), delay);
   }
 
@@ -377,10 +481,10 @@ export class SipRuntime {
         this.rebuildUa();
       }
       if (this.attempts >= PERSISTENT_FAILURE_ATTEMPTS) {
-        this.errors.add("CONNECTION_LOST");
+        this.raiseError("CONNECTION_LOST", e instanceof Error ? e.message : String(e));
       }
-      this.report();
       this.scheduleReconnect(); // keep trying while an allow site exists (SW stops us otherwise)
+      this.report();
     } finally {
       this.attemptInFlight = false;
       if (this.attemptQueued && this.running) {
@@ -396,6 +500,35 @@ export class SipRuntime {
     }
     this.attempts = 0;
     this.scheduleReconnect(0);
+  }
+
+  /**
+   * Verify the microphone from the offscreen document — the one context that both holds the
+   * runtime's mic state and can open a capture without a user gesture. The panel's "Test
+   * microphone" action routes here rather than duplicating the check, so a pass immediately
+   * clears MICROPHONE_BLOCKED for every surface. An offscreen document cannot show a
+   * permission prompt, so a fail is reported for the caller to escalate to the Options page.
+   */
+  async testMic(): Promise<MicTestResult> {
+    let ok = (await probeMicPermission()) === "granted";
+    if (ok) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+        stream.getTracks().forEach((t) => t.stop());
+      } catch (e) {
+        diag("media", "microphone test failed", { error: String(e) });
+        ok = false;
+      }
+    }
+    this.micOk = ok;
+    if (ok) {
+      this.clearError("MICROPHONE_BLOCKED");
+      this.micLabel = await readMicLabel();
+    } else {
+      this.raiseError("MICROPHONE_BLOCKED", "permission denied or device unavailable");
+    }
+    this.report();
+    return { ok, label: this.micLabel };
   }
 
   /**
@@ -460,8 +593,11 @@ export class SipRuntime {
     }
     this.phase = "stopped";
     this.errors.clear();
+    this.errorReasons.clear();
     this.reconnecting = false;
     this.callInProgress = false;
+    this.registrationExpiresAt = null;
+    this.reconnectProgress = null;
     this.report();
   }
 
@@ -482,7 +618,12 @@ export class SipRuntime {
       errors: [...this.errors],
       reconnecting: this.reconnecting,
       link: this.link(),
-      callInProgress: this.callInProgress
+      callInProgress: this.callInProgress,
+      registrationExpiresAt: this.registrationExpiresAt,
+      reconnect: this.reconnectProgress,
+      micDeviceLabel: this.micLabel,
+      micLevel: this.deps.micLevel?.() ?? null,
+      lastError: this.lastError()
     });
   }
 }

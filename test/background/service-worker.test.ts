@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installFakeChrome, type FakeChrome } from "../fakes/chrome.js";
+import type { DisplayState } from "../../src/shared/state.js";
 
 let fake: FakeChrome;
 beforeEach(() => {
@@ -34,6 +35,11 @@ function offscreenStatus(overrides: Record<string, unknown> = {}) {
       reconnecting: false,
       link: { registration: "up", websocket: "up", microphone: "ok", media: "idle" },
       callInProgress: false,
+      registrationExpiresAt: null,
+      reconnect: null,
+      micDeviceLabel: null,
+      micLevel: null,
+      lastError: null,
       ...overrides
     }
   };
@@ -187,6 +193,105 @@ describe("broadcast", () => {
     );
     await vi.waitFor(() => expect(reply).toBeDefined());
     expect((reply as { state: { runtime: string } }).state.runtime).toBeDefined();
+  });
+});
+
+describe("status detail relay", () => {
+  async function bootTwoTabs() {
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"], turn: { enabled: true, url: "turn:t", username: "u", credential: "c" } });
+    fake._openTab(1, "https://crm.example.com/");
+    fake._openTab(2, "https://crm.example.com/other");
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
+    fake.sentTabMessages.length = 0;
+  }
+
+  const stateFor = (tabId: number) =>
+    (fake.sentTabMessages.filter((m) => m.tabId === tabId).pop()!.message as { state: DisplayState }).state;
+
+  it("relays every new payload field to all allow-site tabs, in sync", async () => {
+    await bootTwoTabs();
+    fake.runtime.onMessage.fire(
+      offscreenStatus({
+        registrationExpiresAt: 1_770_000_600_000,
+        reconnect: { attempt: 4, nextAttemptAt: 1_770_000_016_000 },
+        micDeviceLabel: "Studio Mic",
+        lastError: { code: "REGISTRATION_FAILED", reasonPhrase: "403 Forbidden" }
+      }),
+      {},
+      () => {}
+    );
+    await vi.waitFor(() => expect(fake.sentTabMessages.filter((m) => m.tabId === 2).length).toBeGreaterThan(0));
+    for (const tabId of [1, 2]) {
+      const details = stateFor(tabId).details;
+      expect(details.account).toBe("1001");
+      expect(details.domain).toBe("voice.example.com");
+      expect(details.turnConfigured).toBe(true);
+      expect(details.registrationExpiresAt).toBe(1_770_000_600_000);
+      expect(details.reconnect).toEqual({ attempt: 4, nextAttemptAt: 1_770_000_016_000 });
+      expect(details.micDeviceLabel).toBe("Studio Mic");
+      expect(details.lastError).toEqual({ code: "REGISTRATION_FAILED", reasonPhrase: "403 Forbidden" });
+    }
+    expect(stateFor(1)).toEqual(stateFor(2));
+    // The password never reaches a page, whatever else does.
+    expect(JSON.stringify(fake.sentTabMessages)).not.toContain(ACCOUNT.password);
+  });
+
+  it("runs microphone metering only while a panel is expanded, and never levels to a collapsed tab", async () => {
+    await bootTwoTabs();
+    const meterCalls = () =>
+      fake.sentRuntimeMessages
+        .filter((m) => (m as { type?: string }).type === "runtime/micMeter")
+        .map((m) => (m as { on: boolean }).on);
+    const levelMessages = () => fake.sentTabMessages.filter((m) => (m.message as { type?: string }).type === "mic/level");
+
+    // Collapsed everywhere: a level tick reaches nobody.
+    fake.runtime.onMessage.fire({ target: "background", type: "offscreen/micLevel", level: 0.5 }, {}, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    expect(levelMessages()).toEqual([]);
+    expect(meterCalls()).toEqual([]);
+
+    // Tab 1 expands its panel → metering on, and only tab 1 gets levels.
+    fake.runtime.onMessage.fire({ target: "background", type: "ui/panelState", open: true }, { tab: { id: 1 } }, () => {});
+    await vi.waitFor(() => expect(meterCalls()).toEqual([true]));
+    fake.runtime.onMessage.fire({ target: "background", type: "offscreen/micLevel", level: 0.5 }, {}, () => {});
+    await vi.waitFor(() => expect(levelMessages().length).toBe(1));
+    expect(levelMessages()[0].tabId).toBe(1);
+
+    // Collapsing the last open panel switches metering back off.
+    fake.runtime.onMessage.fire({ target: "background", type: "ui/panelState", open: false }, { tab: { id: 1 } }, () => {});
+    await vi.waitFor(() => expect(meterCalls()).toEqual([true, false]));
+  });
+
+  it("stops metering when the tab showing the panel is closed", async () => {
+    await bootTwoTabs();
+    fake.runtime.onMessage.fire({ target: "background", type: "ui/panelState", open: true }, { tab: { id: 1 } }, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    fake._closeTab(1);
+    await vi.waitFor(() => {
+      const meter = fake.sentRuntimeMessages.filter((m) => (m as { type?: string }).type === "runtime/micMeter");
+      expect(meter[meter.length - 1]).toMatchObject({ on: false });
+    });
+  });
+
+  it("routes the panel's microphone test to the offscreen runtime", async () => {
+    await bootTwoTabs();
+    fake.sentRuntimeMessages.length = 0;
+    fake.runtime.onMessage.fire({ target: "background", type: "ui/testMic" }, { tab: { id: 1 } }, () => {});
+    await vi.waitFor(() =>
+      expect(fake.sentRuntimeMessages.some((m) => (m as { type?: string }).type === "runtime/testMic")).toBe(true)
+    );
+  });
+
+  it("restarts a runtime that stopped itself once the microphone gate clears", async () => {
+    await bootTwoTabs();
+    // Blocked at start: the runtime stops itself, so the worker must not keep believing it runs.
+    fake.runtime.onMessage.fire(offscreenStatus({ phase: "stopped", errors: ["MICROPHONE_BLOCKED"] }), {}, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    fake.sentRuntimeMessages.length = 0;
+    fake.runtime.onMessage.fire(offscreenStatus({ phase: "stopped", errors: [] }), {}, () => {});
+    await vi.waitFor(() =>
+      expect(fake.sentRuntimeMessages.some((m) => (m as { type?: string }).type === "runtime/start")).toBe(true)
+    );
   });
 });
 

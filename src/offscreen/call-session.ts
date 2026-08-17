@@ -30,7 +30,7 @@ export interface InvitationLike {
 export interface CallSessionDeps {
   audio: HTMLAudioElement;
   onChange(callState: CallState, callInProgress: boolean): void;
-  onMediaFailed(): void;
+  onMediaFailed(reason: string): void;
 }
 
 const RESET_MS_FAILED = 3000;
@@ -46,6 +46,19 @@ export class CallSessionManager {
 
   callState(): CallState {
     return this.state;
+  }
+
+  /**
+   * Read-only view of the microphone track this session already captured, for level metering.
+   * Never mutates the session; the meter must not open a second capture of a live device.
+   */
+  localAudioTrack(): MediaStreamTrack | null {
+    const pc = this.session?.sessionDescriptionHandler?.peerConnection;
+    const track = pc
+      ?.getSenders()
+      .map((s) => s.track)
+      .find((t) => t?.kind === "audio");
+    return track ?? null;
   }
 
   handleInvite(invitation: InvitationLike): void {
@@ -211,7 +224,7 @@ export class CallSessionManager {
     pc.addEventListener("iceconnectionstatechange", () => {
       if (pc.iceConnectionState === "failed") {
         diag("media", "ICE connection failed");
-        this.deps.onMediaFailed();
+        this.deps.onMediaFailed("ICE connection failed");
       }
     });
   }

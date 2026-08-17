@@ -101,8 +101,10 @@ export function installFakeChrome() {
     },
 
     runtime: {
-      sendMessage: async (message: unknown) => {
+      // Returns unknown so a test can stand in a responder (e.g. the offscreen mic test).
+      sendMessage: async (message: unknown): Promise<unknown> => {
         sentRuntimeMessages.push(message);
+        return undefined;
       },
       onMessage: runtimeOnMessage,
       onInstalled: runtimeOnInstalled,

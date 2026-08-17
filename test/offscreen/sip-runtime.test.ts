@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OffscreenStatus, RuntimeConfig } from "../../src/shared/messages.js";
 import {
+  parseExpiresSeconds,
   SipRuntime,
+  type ResponseLike,
   type RegistererLike,
   type UaDelegate,
   type UaFactory,
@@ -10,10 +12,14 @@ import {
 
 vi.mock("../../src/offscreen/media.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  probeMicPermission: () => Promise.resolve(micState)
+  probeMicPermission: () => Promise.resolve(micState),
+  readMicLabel: () => Promise.resolve(micLabel)
 }));
 
 let micState: "granted" | "blocked" = "granted";
+let micLabel: string | null = "Studio Mic";
+/** Response handed to the register request delegate; drives expiry and reason-phrase parsing. */
+let registerResponse: ResponseLike | undefined;
 
 const CONFIG: RuntimeConfig = {
   sipUri: "sip:1001@voice.example.com",
@@ -78,7 +84,7 @@ class FakeRegisterer implements RegistererLike {
   registers = 0;
   unregisters = 0;
   pendingRegisters: Array<{ fireAccept: () => void; fireReject: () => void }> = [];
-  register(opts?: { requestDelegate?: { onAccept?: () => void; onReject?: () => void } }) {
+  register(opts?: { requestDelegate?: { onAccept?: (r?: ResponseLike) => void; onReject?: (r?: ResponseLike) => void } }) {
     this.registers++;
     if (manualRegister) {
       return new Promise<void>((resolve) => {
@@ -94,8 +100,8 @@ class FakeRegisterer implements RegistererLike {
         });
       });
     }
-    if (rejectRegister) opts?.requestDelegate?.onReject?.();
-    else opts?.requestDelegate?.onAccept?.();
+    if (rejectRegister) opts?.requestDelegate?.onReject?.(registerResponse);
+    else opts?.requestDelegate?.onAccept?.(registerResponse);
     return Promise.resolve();
   }
   unregister() { this.unregisters++; return Promise.resolve(); }
@@ -104,6 +110,8 @@ class FakeRegisterer implements RegistererLike {
 let ua: FakeUa;
 let registerer: FakeRegisterer;
 let statuses: OffscreenStatus[];
+/** Stand-in for the offscreen mic meter's current level. */
+let micLevel_: number | null = null;
 
 function makeRuntime() {
   statuses = [];
@@ -114,7 +122,12 @@ function makeRuntime() {
       return { ua, registerer };
     }
   };
-  return new SipRuntime({ factory, audio: {} as HTMLAudioElement, onStatus: (s) => statuses.push(s) });
+  return new SipRuntime({
+    factory,
+    audio: {} as HTMLAudioElement,
+    onStatus: (s) => statuses.push(s),
+    micLevel: () => micLevel_
+  });
 }
 
 const last = () => statuses[statuses.length - 1];
@@ -122,6 +135,9 @@ const last = () => statuses[statuses.length - 1];
 beforeEach(() => {
   vi.useFakeTimers();
   micState = "granted";
+  micLabel = "Studio Mic";
+  micLevel_ = null;
+  registerResponse = undefined;
   rejectRegister = false;
   manualRegister = false;
   // Zero jitter by default so the timing-sensitive tests stay deterministic; the jitter
@@ -605,5 +621,127 @@ describe("review fixes: concurrency and races", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(last().phase).toBe("stopped");
     expect(last().errors).not.toContain("REGISTRATION_FAILED");
+  });
+});
+
+function response(headers: Record<string, string>, statusCode?: number, reasonPhrase?: string): ResponseLike {
+  return {
+    message: {
+      statusCode,
+      reasonPhrase,
+      getHeader: (name: string) => headers[name.toLowerCase()]
+    }
+  };
+}
+
+describe("start() on an already-running runtime", () => {
+  it("replays the status for an unchanged config (service-worker restart resync)", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const before = registerer.registers;
+    statuses.length = 0;
+    await rt.start({ ...CONFIG });
+    expect(statuses.length).toBe(1);
+    expect(last().phase).toBe("ready");
+    expect(registerer.registers).toBe(before); // no re-registration, no new UA
+  });
+
+  it("restarts itself when the config changed under it", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const firstUa = ua;
+    await rt.start({ ...CONFIG, password: "new-pw" });
+    // A worker that restarted cannot know it must stop first, so the runtime does it itself.
+    expect(firstUa.stopped).toBe(1);
+    expect(ua).not.toBe(firstUa);
+    expect(last().phase).toBe("ready");
+  });
+
+  it("defers a config change while a call is in progress", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    const firstUa = ua;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (rt as unknown as { callInProgress: boolean }).callInProgress = true;
+    await rt.start({ ...CONFIG, password: "new-pw" });
+    expect(firstUa.stopped).toBe(0);
+    expect(ua).toBe(firstUa);
+  });
+});
+
+describe("parseExpiresSeconds", () => {
+  it("prefers the Expires header, then the Contact parameter, then the RFC default", () => {
+    expect(parseExpiresSeconds(response({ expires: "120" }))).toBe(120);
+    expect(parseExpiresSeconds(response({ contact: "<sip:1001@host;transport=wss>;expires=90" }))).toBe(90);
+    expect(parseExpiresSeconds(response({}))).toBe(600);
+    expect(parseExpiresSeconds(undefined)).toBe(600);
+  });
+});
+
+describe("status payload for the panel", () => {
+  it("reports the expiry the server granted, and the microphone device", async () => {
+    registerResponse = response({ expires: "120" });
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(last().registrationExpiresAt).toBe(Date.now() + 120_000);
+    expect(last().micDeviceLabel).toBe("Studio Mic");
+    expect(last().reconnect).toBeNull();
+    expect(last().lastError).toBeNull();
+  });
+
+  it("carries the server's reason phrase with a rejected registration", async () => {
+    rejectRegister = true;
+    registerResponse = response({}, 403, "Forbidden");
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(last().lastError).toEqual({ code: "REGISTRATION_FAILED", reasonPhrase: "403 Forbidden" });
+    expect(last().registrationExpiresAt).toBeNull();
+    // The re-register countdown is already on the status that reported the failure.
+    expect(last().reconnect?.nextAttemptAt).toBe(Date.now() + 30_000);
+  });
+
+  it("counts the reconnect ladder down for the panel", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    ua.reconnectFails = 99;
+    ua.delegate.onDisconnect(new Error("wss dropped"));
+    const t0 = Date.now();
+    expect(last().reconnect).toEqual({ attempt: 1, nextAttemptAt: t0 + 1000 });
+    expect(last().registrationExpiresAt).toBeNull();
+    await vi.advanceTimersByTimeAsync(1100);
+    // The first attempt ran at t0+1s and failed; the ladder's next rung is 2s after that.
+    expect(last().reconnect).toEqual({ attempt: 2, nextAttemptAt: t0 + 1000 + 2000 });
+  });
+
+  it("attaches the reason to a persistent connection failure", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    ua.reconnectFails = 99;
+    ua.delegate.onDisconnect(new Error("wss dropped"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(last().errors).toContain("CONNECTION_LOST");
+    expect(last().lastError).toEqual({ code: "CONNECTION_LOST", reasonPhrase: "down" });
+  });
+
+  it("reports the fault the UI will show, not the most recent one", async () => {
+    micState = "blocked";
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    // MICROPHONE_BLOCKED outranks everything else (design §16.5), so it owns the reason slot.
+    expect(last().lastError).toEqual({ code: "MICROPHONE_BLOCKED", reasonPhrase: "permission not granted" });
+  });
+
+  it("passes the meter's level through, and clears everything on stop", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    micLevel_ = 0.42;
+    ua.delegate.onDisconnect(new Error("wss dropped"));
+    expect(last().micLevel).toBe(0.42);
+    micLevel_ = null;
+    await rt.stop();
+    expect(last().registrationExpiresAt).toBeNull();
+    expect(last().reconnect).toBeNull();
+    expect(last().lastError).toBeNull();
+    expect(last().micLevel).toBeNull();
   });
 });
