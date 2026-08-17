@@ -99,7 +99,11 @@ Responsibilities:
 * Handles `Event: talk`
 * Handles `Event: hold`
 * Maintains the global Runtime State and Call State
-* Broadcasts state to the Service Worker
+* Measures the microphone input level (AnalyserNode, 10 Hz) while a panel is expanded
+* Runs the microphone test on request — the one context that both owns the runtime's
+  microphone state and can open a capture without a user gesture
+* Broadcasts state to the Service Worker: phase, errors, links, registration expiry, reconnect
+  backoff progress, microphone device label and level, and the active fault's reason phrase
 
 Globally, only the following are allowed:
 
@@ -113,8 +117,9 @@ Globally, only the following are allowed:
 Responsibilities:
 
 * Injected only into the top-level page of an Allow Site
-* Renders the Web SIP Phone status dot using Shadow DOM
-* Displays the global voice-link state (SIP registration, WSS, microphone, media) — never call details
+* Renders the Web SIP Phone button, its status badge, and the `Voice connection` panel using Shadow DOM
+* Displays the global voice-link state — identity (account, domain), signaling health and
+  registration expiry, microphone device and level, TURN risk, and the active fault — never call details
 * Receives Service Worker broadcasts
 * Handles expand (error/status panel), collapse, free dragging, and opening settings
 * Registers a `beforeunload` leave confirmation when necessary
@@ -747,7 +752,7 @@ ENDED
 
 # 14. Web SIP Phone UI
 
-Web SIP Phone appears on business pages as a draggable **WebRTC voice connection status dot** that reflects the health of the browser-side SIP, WSS, microphone, and WebRTC media links.
+Web SIP Phone appears on business pages as a draggable **WebRTC voice connection status widget** — a headset button carrying a health badge (see 14.3) — that reflects the health of the browser-side SIP, WSS, microphone, and WebRTC media links.
 
 > Core principle: Web SIP Phone is a status indicator and fault entry point for the browser WebRTC voice link — not another agent softphone.
 
@@ -762,11 +767,15 @@ UI requirements:
 * White or light-colored card
 * Rounded corners
 * Subtle shadow
-* System fonts
-* Bundled SVG icons
+* `Inter` where the host application already provides it, falling back to system fonts — the
+  widget adopts the shadcn/ui neutral tokens (colors, radii, shadow) of the host shell rather than
+  introducing a look of its own
+* Bundled SVG icons (lucide `headset` on the button, lucide check / triangle-alert / x in the panel)
 * Not polluted by host page CSS
 * Style isolation via Shadow DOM
-* State is not conveyed by color alone
+* State is not conveyed by color alone: the panel pairs every signal with a check / warning-triangle
+  / cross shape, and the collapsed badge pairs color with a pulse and states its meaning in the
+  button's tooltip and `aria-label`
 * Supports keyboard focus and basic accessibility attributes
 
 UI copy is in English for version 1.
@@ -786,7 +795,24 @@ UI copy is in English for version 1.
 
 ## 14.3 Normal State (Collapsed)
 
-Under normal conditions Web SIP Phone always stays collapsed, showing only a small voice-connection status icon.
+Under normal conditions Web SIP Phone always stays collapsed: a 36px round button carrying a headset
+icon, with a small connection-health badge on its top-right corner.
+
+| Badge | Runtime state |
+| ----- | ------------- |
+| Green | `READY` |
+| Amber, pulsing | `CONNECTING`, `REGISTERING`, or reconnecting after a drop |
+| Red | any of the four faults, or no runtime at all (`UNCONFIGURED`, `INACTIVE_NO_ALLOWED_SITE`) |
+
+The pulse is reserved for transitional states so a blink is never read as "failed". The badge's
+meaning is repeated in words in the button's tooltip and `aria-label` (`Voice ready`,
+`Connecting…`, `Reconnecting…`, `Registration failed`, `Not connected`).
+
+The badge reports connection health only. A call in progress tints the *button* instead, in the
+host design system's on-call hue, with `On a call` in the tooltip. This is the single exception to
+"call state never renders UI", and it is deliberately narrow: the content script is sent one
+`busy` boolean, never the call state, so the UI can show *that* a call is happening but has no way
+to show which call, for how long, or with whom.
 
 It must not duplicate anything the existing agent softphone bar already shows:
 
@@ -807,33 +833,72 @@ Web SIP Phone auto-expands only when one of the following faults occurs:
 * Microphone permission denied or device unavailable
 * ICE, STUN, TURN, or WebRTC media connection failure
 
-When expanded it shows only:
+Auto-expand opens the same `Voice connection` panel described in 14.5 — there is no separate
+error card. The fault replaces the row of the signal it belongs to, in place: that row is banded
+red, carries a check/warning/x shape as well as colour, and states the failure imperatively. The
+rest of the panel (extension identity, the healthy signals) stays on screen, because "which
+extension is this?" is exactly the question a fault raises.
 
-* A concise error name
-* One line of essential explanation
-* One clear recovery entry point
+The panel stays open for as long as the fault lasts: clicking the button does not collapse it, and
+it closes by itself once the fault clears. A fault is dismissed by fixing it, not by hiding it.
 
-Examples:
+Fault copy is one line, in the form *what failed (why) — what to do*:
 
-| Error | Action |
-| ----- | ------ |
-| `Registration failed` | `Open Settings` |
-| `Voice connection lost` | `Retry` |
-| `Microphone unavailable` | `Enable microphone` |
-| `Media connection failed` | `Configure TURN` |
+| Error | Row | Copy | Emphasised action |
+| ----- | --- | ---- | ----------------- |
+| Registration failure | `Signaling` | `Registration failed (403 Forbidden) — check password in Settings` | `Retry now` |
+| WSS connection lost | `Signaling` | `Voice server unreachable — check the network connection` | `Retry now` |
+| Microphone denied | `Microphone` | `Microphone blocked — allow access in Settings` | `Enable microphone` |
+| Media failure | `Call audio` | `Call audio failed (ICE connection failed) — configure a TURN server` | `Configure TURN` |
 
-Do not show SIP status codes, Q.850 causes, protocol stacks, or any other developer-facing error details.
+While the runtime is backing off, the faulted row also counts down to the next attempt
+(`Retrying in 0:08 · attempt 3`).
+
+Exactly one action is emphasised at a time: the recovery step for the current fault, rendered as
+the first, bold entry in the panel footer. The faulted row itself carries no button.
+
+The reason phrase — the SIP status code and reason from the server's own response, or the
+browser's error — is shown. This is a deliberate narrowing of the older "no protocol details"
+rule: `403` versus `404` is the difference between a wrong password and an unknown extension, and
+without it the user cannot act. Everything else stays hidden: no Q.850 causes, no stack traces, no
+transport internals.
 
 ## 14.5 Voice Connection Panel
 
-Clicking the collapsed status dot opens a concise `Voice connection` status panel.
+Clicking the collapsed button opens a concise `Voice connection` status panel. It answers
+*who am I on this system, and what is likely to break a call* — not *what are the four raw signal
+values*, which is a question users do not have.
 
-The panel shows only the status of:
+The panel header states the overall status in words and colour (`Voice ready`, `Connecting…`,
+`Registration failed`). Below it, one row per fact, with a fixed label column and a fixed status
+column so every shape lands on the same vertical line:
 
-* SIP Registration
-* WebSocket
-* Microphone
-* Media
+| Row | Content |
+| --- | ------- |
+| `Extension` | `1001 @ voice.example.com` — the account and domain from Settings, never the password |
+| `Signaling` | `WSS · expires in 4:12` — SIP registration and WebSocket merged, with the registration expiry counting down |
+| `Microphone` | The device label, with a live input-level meter |
+| `TURN` | `Configured` / `Not configured` — a standing deployment risk, one word |
+
+SIP registration and WebSocket are one row because in SIP-over-WSS their disagreement is
+unreachable: a registration cannot be up while its only transport is down. The `Media` row is not
+in the headline view at all — outside a call it is a constant `Idle`.
+
+The four raw signals (`SIP registration`, `WebSocket`, `Microphone`, `Media`) plus TURN's full
+consequence remain available behind a chevron on the `Signaling` row, collapsed by default.
+
+The footer always offers `Test microphone`, `Copy diagnostics`, `Settings`, and the extension
+version. Its first entry is the one emphasised action: `Reconnect` when nothing is broken, and
+while a fault is up the recovery step for that fault instead (`Retry now`, `Enable microphone`,
+`Configure TURN` — see 14.4). `Test microphone` runs the offscreen
+document's own microphone check rather than duplicating it; a failure hands the user to the
+Options page, the only context that can prompt for permission. `Copy diagnostics` copies the
+extension version, account and domain, every signal state, the last error and the relevant
+timestamps to the clipboard, with credentials excluded.
+
+The microphone level is sampled in the offscreen document (an `AnalyserNode` over the stream the
+call already acquired, or a capture the meter opens itself), throttled to 10 Hz, and broadcast
+only while at least one panel is expanded. The content script never touches the microphone.
 
 The panel must not provide any call control buttons, and must not display:
 
@@ -873,45 +938,50 @@ Error display principles:
 
 * Short copy
 * Show only the single most important error at a time
-* A concise error name, one line of essential explanation, one clear recovery entry point
-* No technical stack traces
-* No SIP status codes, Q.850 causes, or protocol details shown to ordinary users
+* One line, in the form *what failed (why) — what to do*, shown in the row of the signal that
+  failed, with exactly one emphasised recovery action in the panel footer
+* The failure's reason phrase is included: the server's SIP status code and reason, or the
+  browser's error. It is the difference between an actionable message and a shrug
+* No technical stack traces, Q.850 causes, transport internals, or protocol dumps
 
 ## 16.1 Registration Failure
 
-Display:
+Display, in the `Signaling` row:
 
 ```text
-Registration failed
-Check account settings
+Registration failed (403 Forbidden) — check password in Settings
+Retrying in 0:08 · attempt 3
 ```
 
-Action:
+Emphasised action:
 
 ```text
-Open Settings
+Retry now
 ```
 
-Clicking opens the Account page.
+`Settings` sits next to it in the footer and opens the Account page. A failed REGISTER is never
+terminal: the runtime keeps retrying on its own (see 16.2), and the countdown says when.
 
 ## 16.2 WSS Disconnection
 
-While reconnecting automatically:
+While reconnecting automatically, the panel headline reads `Reconnecting…` and the `Signaling` row
+stays amber rather than turning into a fault:
 
 ```text
-Reconnecting…
+Signaling  ⚠ WSS · reconnecting · retrying in 0:04 · attempt 2
 ```
 
-On persistent failure:
+On persistent failure, in the `Signaling` row:
 
 ```text
-Voice connection lost
+Voice server unreachable — check the network connection
+Retrying in 0:12 · attempt 6
 ```
 
-Action:
+Emphasised action:
 
 ```text
-Retry
+Retry now
 ```
 
 Keep reconnecting with a backoff strategy as long as an Allow Site still exists.
@@ -920,13 +990,13 @@ Stop reconnecting when there is no Allow Site.
 
 ## 16.3 Media Failure
 
-Display:
+Display, in a `Call audio` row added for the duration of the fault:
 
 ```text
-Media connection failed
+Call audio failed (ICE connection failed) — configure a TURN server
 ```
 
-Action:
+Emphasised action:
 
 ```text
 Configure TURN
@@ -940,13 +1010,13 @@ Options → Advanced → TURN
 
 ## 16.4 Microphone Failure
 
-Display:
+Display, in the `Microphone` row:
 
 ```text
-Microphone unavailable
+Microphone blocked — allow access in Settings
 ```
 
-Action:
+Emphasised action:
 
 ```text
 Enable microphone
@@ -1014,10 +1084,16 @@ No TURN is configured by default.
 When ICE fails or no media path is available:
 
 1. Enter MEDIA_FAILED.
-2. The UI shows `Media connection failed`.
-3. Offer `Configure TURN`.
+2. The panel adds a `Call audio` row reading `Call audio failed (ICE connection failed) —
+   configure a TURN server` (see 16.3).
+3. Offer `Configure TURN` as the emphasised footer action.
 4. Do not redial automatically.
 5. Do not recover the failed call.
+
+ICE gathering is capped at 1 second rather than SIP.js's 5000ms default, because the answer SDP is
+only sent once gathering ends and any candidate found after the cap never reaches the peer in
+non-trickle signaling. See docs/KNOWN-LIMITATIONS.md — deployments that depend on TURN relay
+candidates across heavy NAT may need it raised.
 
 TURN credentials are stored only locally in the Extension.
 
@@ -1154,6 +1230,16 @@ Cover at least:
 * Microphone error overrides media error
 * Media error overrides registration error
 * Registration error overrides connection error
+* The reported fault reason belongs to the error that wins the priority, not the most recent one
+
+### Status panel
+
+* Identity, registration expiry, backoff progress, microphone device/level and fault reason
+  survive the offscreen → service worker → content relay, identically in every tab
+* Healthy-collapsed versus fault-expanded rendering, including the retry countdown
+* The raw signals stay behind their collapsed disclosure
+* The microphone level is not broadcast while every panel is collapsed
+* Copied diagnostics contain no credential
 
 ## 22.2 Integration Tests
 
@@ -1216,20 +1302,22 @@ All of the following must be satisfied:
 14. BYE received while ACTIVE or HELD ends the call.
 15. A DIALING failure produces no Web SIP Phone UI; the detailed reason goes to the diagnostic log only.
 16. An unexpected second INVITE returns 486 Busy Here.
-17. Web SIP Phone stays collapsed as a small status dot in all normal states, including during calls, and never shows numbers, call duration, or call controls.
-18. Web SIP Phone auto-expands only on registration failure, WSS loss, microphone failure, or media failure, showing an error name, one line of explanation, and one recovery action.
+17. Web SIP Phone stays collapsed in all normal states, including during calls — a call only tints the button and its tooltip — and never shows numbers, call duration, or call controls.
+18. Web SIP Phone auto-expands only on registration failure, WSS loss, microphone failure, or media failure, replacing the affected panel row in place with one imperative line (including the failure's reason phrase), a retry countdown while backing off, and exactly one emphasised recovery action.
 19. Web SIP Phone docks at the top-right corner by default.
-20. Web SIP Phone supports free dragging on both axes (clamped to the viewport), persists the last position, and clicking it opens the `Voice connection` panel showing only SIP Registration, WebSocket, Microphone, and Media status.
+20. Web SIP Phone supports free dragging on both axes (clamped to the viewport), persists the last position, and clicking it opens the `Voice connection` panel: extension identity, merged Signaling (with the registration expiry counting down), microphone device and live level, and TURN — with the four raw signals behind a collapsed chevron, and never any call information.
 21. The UI contains no call control buttons.
-22. Registration failure, connection loss, media failure, and microphone failure all have concise messages.
-23. Media failure offers a Configure TURN entry point.
-24. Closing the last Allow Site during a call makes a best effort to show a leave confirmation.
-25. After the user confirms leaving, the call is hung up, SIP is unregistered, and WSS is closed.
-26. Passwords and authentication headers never appear in logs.
-27. The Extension does not request `<all_urls>`.
-28. The Extension does not remotely load executable code.
-29. It can be packaged as a publicly published Chrome Web Store build.
-30. All automated tests pass.
+22. Registration failure, connection loss, media failure, and microphone failure all have concise, actionable messages naming their reason.
+23. The panel footer always offers Test microphone, Copy diagnostics, Settings and the extension version, led by exactly one emphasised action — Reconnect when healthy, the current fault's recovery step otherwise; copied diagnostics never contain a credential.
+24. The microphone level is measured in the offscreen document and broadcast only while a panel is expanded; the content script never touches the microphone.
+25. Media failure offers a Configure TURN entry point.
+26. Closing the last Allow Site during a call makes a best effort to show a leave confirmation.
+27. After the user confirms leaving, the call is hung up, SIP is unregistered, and WSS is closed.
+28. Passwords and authentication headers never appear in logs.
+29. The Extension does not request `<all_urls>`.
+30. The Extension does not remotely load executable code.
+31. It can be packaged as a publicly published Chrome Web Store build.
+32. All automated tests pass.
 
 ---
 
