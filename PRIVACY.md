@@ -1,6 +1,6 @@
 # Web SIP Phone — Privacy Policy
 
-_Last updated: August 12, 2026_
+_Last updated: August 21, 2026_
 
 Web SIP Phone is a Chrome extension that maintains a WebRTC SIP registration in your browser and
 shows its connection status on websites you explicitly allow.
@@ -20,8 +20,9 @@ shows its connection status on websites you explicitly allow.
 
 - No data is sent to the developer. There are no analytics, telemetry, or tracking of any kind.
 - No data is sold or shared with third parties.
-- No browsing history is read. The extension runs only on the HTTPS sites you add to the
-  Allow Sites list, and its content script only renders the status widget.
+- No browsing history is read. The extension runs only on the sites you add to the Allow Sites
+  list (HTTPS, plus `localhost`/`127.0.0.1` for testing against a development SIP server), and
+  its content script only renders the status widget.
 
 ## Permissions
 
