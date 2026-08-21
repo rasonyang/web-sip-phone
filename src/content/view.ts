@@ -431,7 +431,11 @@ export class WebSipPhoneView {
    * its far edge with the dot so the card grows toward the middle of the screen.
    */
   private cardPlacement(): string {
-    const r = this.dot.getBoundingClientRect();
+    // Measured off the wrap, not the dot: render() clears the wrap before asking for a placement,
+    // so the dot is detached at this point and would report a zero rect — which silently pinned
+    // every panel to "below and to the right", hanging it off the screen at the default dock.
+    // The wrap is always attached and is exactly the widget box (the card is out of flow).
+    const r = this.wrap.getBoundingClientRect();
     const vertical = r.top + r.height / 2 < window.innerHeight / 2 ? "card-below" : "card-above";
     const horizontal = r.left + r.width / 2 < window.innerWidth / 2 ? "card-left" : "card-right";
     return `${vertical} ${horizontal}`;

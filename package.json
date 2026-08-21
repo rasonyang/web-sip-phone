@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "demo": "node scripts/serve-demo.mjs",
+    "shoot": "node scripts/shoot.mjs",
     "test": "vitest run",
     "gen-icons": "node scripts/gen-icons.mjs",
     "package": "npm run build && node scripts/package.mjs"

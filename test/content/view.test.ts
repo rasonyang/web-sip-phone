@@ -337,10 +337,25 @@ describe("panel placement and dismissal", () => {
     dot.click();
     expect(wrap().className).toBe("wrap card-below card-left");
     dot.click();
-    // Parked bottom-right → the card rises and hangs off the dot's right edge.
-    dot.getBoundingClientRect = () => ({ top: 700, left: 900, width: 36, height: 36 }) as DOMRect;
+    // Parked bottom-right → the card rises and hangs off the widget's right edge.
+    wrap().getBoundingClientRect = () => ({ top: 700, left: 900, width: 36, height: 36 }) as DOMRect;
     dot.click();
     expect(wrap().className).toBe("wrap card-above card-right");
+  });
+
+  // Regression: placement used to be measured off the dot, which render() has already detached
+  // by the time it asks. A detached element reports a zero rect, so every panel opened
+  // below-and-right no matter where the widget was parked — off screen at the default dock.
+  it("measures placement off an element that is still in the document", () => {
+    view.update(READY);
+    const dot = root().querySelector("[data-role=dot]") as HTMLElement;
+    const wrap = root().querySelector(".wrap") as HTMLElement;
+    dot.getBoundingClientRect = () => {
+      throw new Error("placement must not be measured off the detached dot");
+    };
+    wrap.getBoundingClientRect = () => ({ top: 8, left: 1236, width: 36, height: 36 }) as DOMRect;
+    dot.click();
+    expect(wrap.className).toBe("wrap card-below card-right");
   });
 
   it("clicking outside the widget dismisses the panel", () => {

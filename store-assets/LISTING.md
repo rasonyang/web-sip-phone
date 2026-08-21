@@ -102,15 +102,13 @@ Nothing is fetched and executed at runtime.
 
 ### Re-shooting them
 
-The business page in shots 1–3 is `store-assets/demo-page/`, checked in so a re-shoot after a UI
-change does not mean rebuilding the page from the old PNGs:
+Shots 1-3: `npm run shoot`. It bundles `scripts/screenshot-preview.ts` — which mounts the real
+`WebSipPhoneView` on `store-assets/demo-page/` with a frozen `DisplayState` — serves the page on
+loopback, and drives headless Chrome over CDP to capture it at exactly 1280x800. Everything
+visible is the shipped component; only the values (extension, expiry, mic level) are scripted,
+and they are frozen so a re-shoot produces the same countdown rather than a fresh diff.
 
-1. `npm run build`, then reload the unpacked extension at `chrome://extensions`.
-2. `npm run demo` — serves the page at http://localhost:8100.
-3. Options → Allow Sites → add `localhost` (loopback is allowed over HTTP), and
-   Advanced → Test microphone to grant access.
-4. Size the viewport to exactly 1280×800 and shoot: ready (green badge), the panel open, and a
-   call in progress. For the call, originate one from FreeSWITCH with
-   `Call-Info: <sip:...>;answer-after=0` so it auto-answers.
+Shot 4 is the options page, taken by hand. Keep a fake account in it — never a real password.
 
-Keep a fake account in shot 4 — never a real password.
+A live shoot is still the authenticity check before a submission that changes the widget: load
+the unpacked build, register against a real server, and confirm the page matches these three.
