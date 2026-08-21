@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Acme CRM</title>
+<!--
+  Stand-in business page for the Chrome Web Store screenshots.
+
+  The store screenshots show the widget on "a business page", and until now that page lived only
+  on the machine that shot them — so a re-shoot after a UI change meant rebuilding it from the old
+  PNGs. It is checked in so the screenshots are reproducible.
+
+  Serve it with `npm run demo` (http://localhost:8100) and add `localhost` under Allow Sites;
+  loopback over HTTP is permitted for exactly this kind of local testing.
+
+  Neutral tokens are the same ones the widget uses (src/content/view.ts) so the widget reads as
+  part of the shell in the screenshot, which is the point the listing is making.
+-->
+<style>
+  :root {
+    --background: #fafafa; --card: #fff; --foreground: #18181b;
+    --muted-foreground: #71717a; --border: #e5e7eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--background); color: var(--foreground);
+    font: 14px/1.5 "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    display: flex; align-items: center; gap: 28px;
+    padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--border);
+  }
+  .brand { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+  nav { display: flex; gap: 24px; }
+  nav a { color: var(--muted-foreground); text-decoration: none; }
+  nav a:hover { color: var(--foreground); }
+  main { max-width: 910px; margin: 0 auto; padding: 24px 0; display: flex; flex-direction: column; gap: 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .card h2 { margin: 0 0 14px; font-size: 14px; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-weight: 400; color: var(--muted-foreground);
+    font-size: 13px; padding: 0 0 8px;
+  }
+  td { padding: 6px 0; border-top: 1px solid var(--border); }
+  .tickets col:nth-child(1) { width: 100px; }
+  .tickets col:nth-child(2) { width: 238px; }
+  .tickets col:nth-child(3) { width: auto; }
+  .tickets col:nth-child(4) { width: 160px; }
+  .activity col:nth-child(1) { width: 146px; }
+  .activity td:first-child { color: var(--muted-foreground); }
+  /* No header row on the activity list — the first row still needs its rule. */
+  .activity tr:first-child td { border-top: 0; }
+  .activity td { border-bottom: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Acme CRM</span>
+  <nav>
+    <a href="#">Tickets</a>
+    <a href="#">Contacts</a>
+    <a href="#">Reports</a>
+  </nav>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Open tickets</h2>
+    <table class="tickets">
+      <colgroup><col><col><col><col></colgroup>
+      <thead>
+        <tr><th>#</th><th>Customer</th><th>Subject</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>4821</td><td>Dana Whitfield</td><td>Cannot reset password</td><td>Open</td></tr>
+        <tr><td>4820</td><td>Marcus Lee</td><td>Invoice mismatch for July</td><td>Pending</td></tr>
+        <tr><td>4818</td><td>Priya Nair</td><td>Upgrade plan question</td><td>Open</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Recent activity</h2>
+    <table class="activity">
+      <colgroup><col><col></colgroup>
+      <tbody>
+        <tr><td>09:14</td><td>Call ended — Dana Whitfield (04:32)</td></tr>
+        <tr><td>09:02</td><td>Note added to #4820</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>

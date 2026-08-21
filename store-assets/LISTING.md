@@ -99,3 +99,18 @@ Nothing is fetched and executed at runtime.
 | `4-options.png` | The options page: Account, Allow Sites, Advanced |
 
 `demo.mp4` is the reviewer walkthrough: register → panel → auto-answered call → hangup.
+
+### Re-shooting them
+
+The business page in shots 1–3 is `store-assets/demo-page/`, checked in so a re-shoot after a UI
+change does not mean rebuilding the page from the old PNGs:
+
+1. `npm run build`, then reload the unpacked extension at `chrome://extensions`.
+2. `npm run demo` — serves the page at http://localhost:8100.
+3. Options → Allow Sites → add `localhost` (loopback is allowed over HTTP), and
+   Advanced → Test microphone to grant access.
+4. Size the viewport to exactly 1280×800 and shoot: ready (green badge), the panel open, and a
+   call in progress. For the call, originate one from FreeSWITCH with
+   `Call-Info: <sip:...>;answer-after=0` so it auto-answers.
+
+Keep a fake account in shot 4 — never a real password.

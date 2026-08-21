@@ -29,6 +29,8 @@ the page's own softphone bar owns all call-facing UI. SIP support comes from a
 - `npm run gen-icons && npm run build` → `dist/`
 - `npm test` — unit + integration tests (Vitest)
 - `npm run package` — store-submittable zip
+- `npm run demo` — serves `store-assets/demo-page/` on http://localhost:8100, the stand-in business
+  page used for the store screenshots (add `localhost` under Allow Sites)
 
 ## Load unpacked
 1. chrome://extensions → enable Developer mode → Load unpacked → select `dist/`.
