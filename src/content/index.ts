@@ -41,23 +41,10 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
     { version: chrome.runtime.getManifest().version }
   );
 
-  let guardArmed = false;
-  const unloadGuard = (e: BeforeUnloadEvent): void => {
-    e.preventDefault();
-    // Chrome requires returnValue to be set; the text itself is not customizable.
-    e.returnValue = "";
-  };
-  function setGuard(on: boolean): void {
-    if (on === guardArmed) {
-      return;
-    }
-    guardArmed = on;
-    if (on) {
-      window.addEventListener("beforeunload", unloadGuard);
-    } else {
-      window.removeEventListener("beforeunload", unloadGuard);
-    }
-  }
+  // No unload guard: a reload or navigation of this page does not own the call. The SIP session,
+  // the WebRTC peer connection and the audio all live in the offscreen document, which the
+  // service worker keeps alive while a call is in progress (design.md §6.5). A fresh content
+  // script simply asks for the current state below and renders it.
 
   // Set once any TabState (initial fetch or broadcast) has been applied; gates the initial-fetch retry loop.
   let gotState = false;
@@ -70,7 +57,6 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
     lastState = ts.state;
     view.update(ts.state);
     applyPosition(host, ts.pos);
-    setGuard(ts.guardUnload);
     if (firstState) {
       // Opening the page while the voice link is in a failed state should recover it
       // without requiring the user to find the Retry button.
@@ -110,7 +96,7 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
   chrome.runtime.onMessage.addListener((raw) => {
     if (isMsg(raw) && raw.target === "content") {
       if (raw.type === "state/update") {
-        applyTabState({ state: raw.state, guardUnload: raw.guardUnload, pos: raw.pos });
+        applyTabState({ state: raw.state, pos: raw.pos });
       } else if (raw.type === "mic/level") {
         // Arrives at 10 Hz while the panel is open; updates the meter bar only.
         view.setMicLevel(raw.level);

@@ -79,7 +79,7 @@ Responsibilities:
 * Options configuration management
 * Message routing between Content Scripts and the Offscreen Document
 * Determining whether at least one Allow Site tab exists
-* Determining whether the current tab is the last Allow Site
+* Applying the runtime lifetime rule (§6.5) — the runtime outlives the pages, never the reverse
 * Managing dynamic site permissions
 * Creating and destroying the Offscreen Document
 
@@ -122,7 +122,7 @@ Responsibilities:
   registration expiry, microphone device and level, TURN risk, and the active fault — never call details
 * Receives Service Worker broadcasts
 * Handles expand (error/status panel), collapse, free dragging, and opening settings
-* Registers a `beforeunload` leave confirmation when necessary
+* Is a pure view of the runtime: it is created and destroyed by page lifecycle and owns no part of the call (§6.5)
 
 The Content Script must not:
 
@@ -331,6 +331,9 @@ The SIP Runtime starts only when all of the following hold:
 2. At least one Allow Site tab is open.
 3. Microphone permission is available.
 
+It is destroyed under the separate lifetime rule of §6.5 — condition 2 falling away is not on its
+own enough while a call is in progress.
+
 Flow:
 
 ```text
@@ -384,31 +387,48 @@ When any of the following states is active:
 * ACTIVE
 * HELD
 
-Use `beforeunload` to make a best effort to show the browser's native confirmation prompt when the last Allow Site page is closed, refreshed, or navigated away from.
+the teardown is **deferred, not performed**. It runs the moment the call ends — see §6.5.
 
-The browser confirmation text cannot be customized.
+There is no `beforeunload` leave confirmation. The page is not asked to protect the call,
+because the page does not hold it.
 
-If the user cancels leaving:
+## 6.5 Runtime Lifetime Rule
 
-* The page stays
-* The call continues
-* SIP registration continues
+**Page reload and navigation do not own the active call lifecycle.**
 
-If the user confirms leaving:
+Everything that carries a call — the SIP.js `UserAgent`, the WSS transport, the registration, the
+SIP session, the `RTCPeerConnection`, the microphone capture and the remote audio element — lives
+in the Offscreen Document. A Content Script is a *view* of that runtime. Reloading, navigating, or
+closing an Allow Site page destroys the view; it must never destroy or restart the runtime.
 
-1. End the current call.
-2. Unregister SIP.
-3. Close WSS.
-4. Stop media.
-5. Destroy the SIP Runtime.
+The Service Worker keeps exactly one rule:
 
-The following browser limitations must be accepted:
+```text
+keep runtime alive if:
+  allowedTabCount > 0 OR activeCall == true
+```
 
-* The browser does not guarantee that `beforeunload` is shown in all cases
-* It may not be shown if the user has not interacted with the page
-* A browser crash or a forced system shutdown cannot guarantee a prompt
+The runtime is destroyed (unregister, close WSS, stop media, close the Offscreen Document) only
+when **both** are false: no Allow Site tab is open **and** no call is in progress. `activeCall` is
+the `callInProgress` flag on the Offscreen Document's status broadcast — true in DIALING, RINGING,
+ACTIVE and HELD.
 
-Unregistration and re-registration caused by a page refresh is acceptable; no refresh grace period is required.
+Consequences that are deliberate:
+
+* A refresh (F5) of an Allow Site page changes nothing at the SIP layer. The tab keeps its URL, so
+  `allowedTabCount` never drops; even if it did, `activeCall` would hold the runtime. Audio does
+  not break, the Call-ID does not change, and no new INVITE or WebRTC negotiation is created.
+* Losing the last Allow Site tab during a call — a refresh window, a closed tab, or an in-tab
+  navigation to a route outside the Allow Site (an SPA `pushState`, which fires no page-unload
+  event at all) — leaves the call up. Teardown is deferred, not cancelled: every call-state change
+  broadcasts a status, and that broadcast re-evaluates the rule, so the runtime is destroyed as
+  soon as the call ends.
+* A call can therefore be in progress with no visible Web SIP Phone UI anywhere. This is accepted:
+  call control belongs to FreeSWITCH, not to the browser, so an invisible call is still a
+  correctly controlled one.
+* A new Content Script does not restore or resume anything. It asks the Service Worker for the
+  current state (`ui/getState`) and renders it, including `busy` for a call it never saw start.
+  There is no session serialization, no `RTCPeerConnection` restore, and no Verto-style resume.
 
 ---
 
@@ -672,7 +692,7 @@ The Extension:
 * Stops media
 * Cleans up the session
 * Updates the internal Call State
-* Keeps the SIP registration, unless the last Allow Site has been closed
+* Keeps the SIP registration, unless the last Allow Site has been closed — in which case the deferred teardown of §6.5 runs now that the call has ended
 
 The UI provides no local hangup button.
 
@@ -743,7 +763,7 @@ ENDED
 
 * Runtime State is managed by the Extension.
 * Call control is driven by FreeSWITCH SIP signaling.
-* Call State is internal-only: it drives SIP execution and `beforeunload` protection, never Web SIP Phone UI rendering.
+* Call State is internal-only: it drives SIP execution and the runtime lifetime rule (§6.5), never Web SIP Phone UI rendering.
 * Web pages must not be able to modify Call State directly.
 * UI clicks must not modify Call State directly.
 * All state transitions are implemented in one place, not scattered across UI components.
@@ -1169,6 +1189,7 @@ Explicitly do not implement:
 * Device switching
 * Local ringtone playback
 * Custom ringtone configuration
+* Session resume across a page reload (Verto-style): SIP sessions and `RTCPeerConnection`s are never serialized or restored — the runtime simply outlives the page (§6.5)
 * Firefox or Safari support
 
 Do not add these features on your own initiative.
@@ -1277,7 +1298,8 @@ Verify in a real FreeSWITCH environment:
 * Google STUN
 * Custom TURN
 * Multiple tabs
-* Closing the last Allow Site
+* Closing the last Allow Site during a call
+* Refreshing an Allow Site page during a call
 * Configuration restored after a Chrome restart
 
 ---
@@ -1311,8 +1333,8 @@ All of the following must be satisfied:
 23. The panel footer always offers Test microphone, Copy diagnostics, Settings and the extension version, led by exactly one emphasised action — Reconnect when healthy, the current fault's recovery step otherwise; copied diagnostics never contain a credential.
 24. The microphone level is measured in the offscreen document and broadcast only while a panel is expanded; the content script never touches the microphone.
 25. Media failure offers a Configure TURN entry point.
-26. Closing the last Allow Site during a call makes a best effort to show a leave confirmation.
-27. After the user confirms leaving, the call is hung up, SIP is unregistered, and WSS is closed.
+26. Refreshing or navigating an Allow Site page during a call does not interrupt audio, change the SIP Call-ID, or create a new INVITE or WebRTC negotiation; the reloaded page reconnects to the running runtime and shows the call already in progress.
+27. Losing the last Allow Site tab during a call keeps the runtime alive; the call is hung up, SIP is unregistered, and WSS is closed only once the call has ended (§6.5).
 28. Passwords and authentication headers never appear in logs.
 29. The Extension does not request `<all_urls>`.
 30. The Extension does not remotely load executable code.

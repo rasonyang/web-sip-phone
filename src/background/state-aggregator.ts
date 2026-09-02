@@ -49,7 +49,10 @@ export function computeDisplayState(input: {
   if (!configured) {
     return { runtime: RuntimeState.Unconfigured, error: null, reconnecting: false, busy: false, link, details };
   }
-  if (allowTabCount === 0) {
+  // Not while a call is in progress: the runtime lifetime rule keeps it alive with no Allow Site
+  // tab left (design.md §6.5), and reporting "inactive, not busy" for a call the extension is
+  // genuinely carrying would be a lie to the Options page — the one surface still open then.
+  if (allowTabCount === 0 && !busy) {
     return { runtime: RuntimeState.InactiveNoAllowedSite, error: null, reconnecting: false, busy: false, link, details };
   }
 
