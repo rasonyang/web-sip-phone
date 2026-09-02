@@ -29,6 +29,17 @@ describe("computeDisplayState", () => {
       RuntimeState.InactiveNoAllowedSite
     );
   });
+  it("reports the live call, not INACTIVE_NO_ALLOWED_SITE, when a call outlives the last tab", () => {
+    // The lifetime rule keeps the runtime alive with no Allow Site tab while a call is in
+    // progress; the Options page is the only surface left, and it must not be told "inactive".
+    const s = computeDisplayState({
+      configured: true,
+      allowTabCount: 0,
+      offscreen: { ...base, callInProgress: true }
+    });
+    expect(s.runtime).toBe(RuntimeState.Ready);
+    expect(s.busy).toBe(true);
+  });
   it("CONNECTING while offscreen not yet reporting", () => {
     expect(computeDisplayState({ configured: true, allowTabCount: 1, offscreen: null }).runtime).toBe(
       RuntimeState.Connecting

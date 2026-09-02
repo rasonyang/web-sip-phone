@@ -55,10 +55,6 @@ export class TabTracker {
     return this.tabs.size;
   }
 
-  isLast(tabId: number): boolean {
-    return this.tabs.size === 1 && this.tabs.has(tabId);
-  }
-
   onChange(cb: () => void): void {
     this.listeners.push(cb);
   }

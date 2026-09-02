@@ -4,13 +4,15 @@ These are accepted trade-offs for version 1, not defects. Version 1 is deliberat
 status indicator, not a softphone — see design.md §21 for the full out-of-scope list (dial pad,
 local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, video, and more).
 
-- **`beforeunload` leave confirmation is best-effort only.** Chrome does not guarantee it is
-  shown: it may be suppressed if the user has not interacted with the page, and it is never shown
-  on a browser crash or a forced system shutdown. If it doesn't show, the tab closes, the call
-  ends, and SIP is unregistered without a confirmation step.
-- **A page refresh causes unregister/re-register.** This is accepted behavior with no refresh
-  grace period — refreshing the last (or only) Allow Site tab drops registration and a fresh
-  REGISTER happens once the page reloads and becomes the Allow Site tab again.
+- **A call can be in progress with no Web SIP Phone UI anywhere.** The runtime lives in the
+  offscreen document and is kept alive while `allowedTabCount > 0 OR activeCall` (design.md §6.5),
+  so a call survives losing the last Allow Site tab — a refresh, a closed tab, or an in-tab
+  navigation off the Allow Site. During that window there is no dot and no panel to look at: the
+  call is still correctly controlled by FreeSWITCH, but the browser shows nothing. Registration is
+  dropped and the offscreen document closed as soon as the call ends. This is the deliberate
+  trade against the alternative — tearing the runtime down on tab loss, which sends a BYE and
+  hangs up on the caller. There is no `beforeunload` leave confirmation; the page is not asked to
+  protect a call it does not hold.
 - **The offscreen document cannot itself prompt for microphone permission.** `getUserMedia`
   prompts do not surface reliably from an offscreen document; microphone access must be granted
   from the Options page (Advanced → Test microphone) before registration can succeed.

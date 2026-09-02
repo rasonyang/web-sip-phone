@@ -55,25 +55,35 @@ async function syncMicMeter(): Promise<void> {
   await chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-function tabState(tabId: number): TabState {
-  return {
-    state: displayState(),
-    guardUnload: (offscreenStatus?.callInProgress ?? false) && tracker.isLast(tabId),
-    pos: config.dotPosition
-  };
+function tabState(): TabState {
+  return { state: displayState(), pos: config.dotPosition };
+}
+
+/** True while the offscreen runtime reports a call in a progress state (design.md §6.5). */
+function callActive(): boolean {
+  return offscreenStatus?.callInProgress ?? false;
 }
 
 async function broadcast(): Promise<void> {
   const optionsMsg: Msg = { target: "options", type: "state/update", state: displayState() };
   void chrome.runtime.sendMessage(optionsMsg).catch(() => {});
+  const ts = tabState();
   for (const tabId of tracker.ids()) {
-    const ts = tabState(tabId);
-    const msg: Msg = { target: "content", type: "state/update", state: ts.state, guardUnload: ts.guardUnload, pos: ts.pos };
+    const msg: Msg = { target: "content", type: "state/update", state: ts.state, pos: ts.pos };
     void chrome.tabs.sendMessage(tabId, msg).catch(() => {});
   }
 }
 
-/** Start/stop the offscreen SIP runtime to match config + tab reality. Serialized to avoid races. */
+/**
+ * Start/stop the offscreen SIP runtime to match config + tab reality. Serialized to avoid races.
+ *
+ * Runtime lifetime rule (design.md §6.5):
+ *
+ *     keep the runtime alive if allowTabCount > 0 OR callActive
+ *
+ * so the runtime is destroyed only when there is no Allow Site tab *and* no call in progress.
+ * Page lifecycle never owns the call: a reload or a navigation may cost the tab, not the call.
+ */
 function evaluate(): Promise<void> {
   evaluating = evaluating.then(async () => {
     try {
@@ -88,7 +98,7 @@ function evaluate(): Promise<void> {
           runtimeStarted = true;
           runtimeConfigKey = key;
           micMeterOn = false; // a fresh runtime starts with metering off
-        } else if (key !== runtimeConfigKey && !(offscreenStatus?.callInProgress ?? false)) {
+        } else if (key !== runtimeConfigKey && !callActive()) {
           // Account/TURN changed while the runtime is up. SipRuntime.start() is a no-op
           // while running, so an explicit stop must precede the restart. Deferred while a
           // call is in progress (a settings edit must not drop a live call); the
@@ -99,7 +109,14 @@ function evaluate(): Promise<void> {
           runtimeConfigKey = key;
           micMeterOn = false;
         }
-      } else if (runtimeStarted) {
+      } else if (runtimeStarted && !callActive()) {
+        // The `!callActive()` half of the lifetime rule. Teardown runs SipRuntime.stop() →
+        // CallSessionManager.terminate() → a real BYE, so doing it during a call would hang up
+        // on the caller. Losing the last Allow Site tab is not evidence the user wants the call
+        // over: a refresh, an in-tab navigation to a route outside the Allow Site, or a closed
+        // tab all look identical here, and none of them owns the call. Deferred, not cancelled:
+        // every call-state change reports a status and that handler re-evaluates, so this runs
+        // the moment the call ends.
         const msg: Msg = { target: "offscreen", type: "runtime/stop" };
         await chrome.runtime.sendMessage(msg).catch(() => {});
         await closeOffscreen();
@@ -155,9 +172,17 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       // config change deferred during a call is applied as soon as the call ends.
       await evaluate();
       break;
-    case "ui/getState":
-      sendResponse(tabState(sender.tab?.id ?? -1));
+    case "ui/getState": {
+      // A content script asks exactly once, on load — so this is also the signal that a tab was
+      // (re)loaded. Its panel starts collapsed, and any entry left over from before a refresh
+      // would keep microphone metering running for a panel that no longer exists.
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined && panelTabs.delete(tabId)) {
+        await syncMicMeter();
+      }
+      sendResponse(tabState());
       break;
+    }
     case "ui/retry":
       await chrome.runtime.sendMessage({ target: "offscreen", type: "runtime/retry" } satisfies Msg).catch(() => {});
       break;

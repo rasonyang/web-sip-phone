@@ -33,9 +33,8 @@ describe("TabTracker", () => {
     expect(tracker.count()).toBe(0);
     fake._openTab(1, "https://crm.example.com/");
     expect(tracker.count()).toBe(1);
-    expect(tracker.isLast(1)).toBe(true);
     fake._openTab(2, "https://crm.example.com/x");
-    expect(tracker.isLast(1)).toBe(false);
+    expect(tracker.count()).toBe(2);
     fake._closeTab(1); // intermediate close: still one left
     expect(tracker.count()).toBe(1);
     fake._closeTab(2);

@@ -35,7 +35,6 @@ export interface RuntimeConfig {
 
 export interface TabState {
   state: DisplayState;
-  guardUnload: boolean;
   pos: StoredDotPosition | null;
 }
 
@@ -59,7 +58,7 @@ export type Msg =
   | { target: "background"; type: "ui/panelState"; open: boolean }
   | { target: "background"; type: "config/changed" }
   | { target: "content"; type: "mic/level"; level: number }
-  | { target: "content"; type: "state/update"; state: DisplayState; guardUnload: boolean; pos: StoredDotPosition | null }
+  | { target: "content"; type: "state/update"; state: DisplayState; pos: StoredDotPosition | null }
   | { target: "options"; type: "state/update"; state: DisplayState };
 
 export function isMsg(value: unknown): value is Msg {

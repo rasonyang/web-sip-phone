@@ -112,22 +112,33 @@ Web SIP Phone runs four cooperating pieces, all in `src/`:
   are broadcast to the service worker; nothing here is rendered directly.
 - **Content script** (`src/content`) — injected only into top-level Allow Site pages (never
   iframes). Renders the Web SIP Phone dot and the `Voice connection` panel in a Shadow DOM,
-  handles dragging and expand/collapse, and registers a best-effort `beforeunload` leave
-  confirmation when a call is in progress. It never holds the SIP password, never runs SIP.js,
+  handles dragging and expand/collapse. It is a pure view of the offscreen runtime and owns no
+  part of the call: reloading or leaving the page destroys the content script, never the SIP
+  session (see *Page reload never ends a call* below). It never holds the SIP password, never runs SIP.js,
   never opens a WebSocket, and never touches the microphone directly — the level meter and the
   microphone test both run in the offscreen document.
 - **Options page** (`src/options`) — Account, Allow Sites, Advanced (microphone test, TURN), and
   About.
 
 **Call states never render UI.** DIALING, RINGING, ACTIVE, HELD, and ENDED are internal-only: the
-content script is sent a single `busy` boolean, which tints the collapsed button and arms the
-unload guard, and nothing else — no numbers, no duration, no call controls. The panel only
+content script is sent a single `busy` boolean, which tints the collapsed button, and nothing
+else — no numbers, no duration, no call controls. The panel only
 auto-expands for the four connection-level errors: registration failure, WSS loss, microphone
 failure, and media failure.
 
+**Page reload never ends a call.** The SIP session, the `RTCPeerConnection`, the microphone and
+the remote audio all live in the offscreen document; a content script is only a view of them. The
+service worker keeps the runtime alive while `allowedTabCount > 0 OR activeCall`, and destroys it
+(unregister, close WSS, stop media, close the document) only when there is no Allow Site tab *and*
+no call in progress. So refreshing an Allow Site page during a call does not interrupt audio,
+change the SIP Call-ID, or produce a new INVITE — the reloaded page just asks for the current
+state and shows the call already in progress. There is no `beforeunload` prompt and no session
+resume: nothing is serialized or restored, the runtime simply outlives the page. See design.md
+§6.5.
+
 ## Test coverage
 
-`npm test` runs 19 files / 219 tests: unit tests (header parsing, the call state machine, Allow
+`npm test` runs 19 files / 225 tests: unit tests (header parsing, the call state machine, Allow
 Site matching, multiple-call rejection, error priority) plus integration tests against a mock SIP
 transport that exercise design.md §22.2 items 1–12 end to end (REGISTER success/failure, WSS
 disconnect/reconnect, Answer-After auto-answer, normal INVITE → RINGING, Talk while

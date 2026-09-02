@@ -168,17 +168,74 @@ describe("account change while running", () => {
   });
 });
 
+describe("page reload does not own the call", () => {
+  const runtimeTypes = () =>
+    fake.sentRuntimeMessages.map((m) => (m as { type?: string }).type).filter((t) => t?.startsWith("runtime/"));
+
+  async function bootInCall() {
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake._openTab(1, "https://crm.example.com/");
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: true }), {}, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    fake.sentRuntimeMessages.length = 0;
+  }
+
+  it("refreshing the only Allow Site tab touches the runtime not at all", async () => {
+    await bootInCall();
+    fake._navigateTab(1, "https://crm.example.com/"); // F5: same URL reloads
+    await new Promise((r) => setTimeout(r, 20));
+    // No runtime/stop means no BYE; no runtime/start means no fresh REGISTER and no new INVITE
+    // or WebRTC negotiation. The SIP session and its Call-ID are simply never touched.
+    expect(runtimeTypes()).toEqual([]);
+    expect(fake._offscreenOpen).toBe(true);
+  });
+
+  it("keeps the runtime alive with no Allow Site tabs while a call is active", async () => {
+    await bootInCall();
+    fake._closeTab(1); // the reload window, or a navigation away: allowTabCount drops to 0
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]);
+    expect(fake._offscreenOpen).toBe(true);
+
+    fake._openTab(1, "https://crm.example.com/"); // the page comes back
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]); // already running: not restarted
+    expect(fake._offscreenOpen).toBe(true);
+  });
+
+  it("tears the runtime down once the call ends with no Allow Site tabs left", async () => {
+    await bootInCall();
+    fake._closeTab(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]);
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: false }), {}, () => {});
+    await vi.waitFor(() => expect(runtimeTypes()).toContain("runtime/stop"));
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(false));
+  });
+
+  it("a reloaded tab gets the current state back from ui/getState", async () => {
+    await bootInCall();
+    let reply: unknown;
+    fake.runtime.onMessage.fire({ target: "background", type: "ui/getState" }, { tab: { id: 1 } }, (r: unknown) => (reply = r));
+    await vi.waitFor(() => expect(reply).toBeDefined());
+    const ts = reply as { state: { runtime: string; busy: boolean } };
+    expect(ts.state.runtime).toBe("READY");
+    expect(ts.state.busy).toBe(true); // the existing call, shown to a content script that never saw it start
+  });
+});
+
 describe("broadcast", () => {
-  it("sends per-tab state with guardUnload only on the last tab during a call", async () => {
+  it("sends per-tab state to every Allow Site tab", async () => {
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
     fake._openTab(1, "https://crm.example.com/");
     await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
     fake.sentTabMessages.length = 0;
     fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: true }), {}, () => {});
     await vi.waitFor(() => expect(fake.sentTabMessages.length).toBeGreaterThan(0));
-    const msg = fake.sentTabMessages.find((m) => m.tabId === 1)!.message as { guardUnload: boolean; state: { runtime: string } };
-    expect(msg.guardUnload).toBe(true);
+    const msg = fake.sentTabMessages.find((m) => m.tabId === 1)!.message as { state: { runtime: string; busy: boolean } };
     expect(msg.state.runtime).toBe("READY");
+    expect(msg.state.busy).toBe(true);
   });
 
   it("ui/getState replies with current TabState", async () => {
