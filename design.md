@@ -26,7 +26,7 @@ Do not duplicate anything the existing agent softphone bar already displays, inc
 * Agent status
 * Answer, hangup, hold, resume, or mute controls
 
-Call states such as `DIALING`, `RINGING`, `ACTIVE`, and `HELD` are still maintained in the internal state machine so that FreeSWITCH SIP control signaling executes correctly, but they are never expanded into a second softphone UI.
+Call states such as `DIALING`, `RINGING`, `ACTIVE`, and `HELD` are still maintained in the internal state machine so that FreeSWITCH SIP control signaling executes correctly, but they are never expanded into a second softphone UI. The one thing a call state does produce for the user is sound: a normal inbound call plays a local ringtone while `RINGING` (§9.4). That is audio, not UI — no panel opens, no button appears, and nothing about the call is rendered.
 
 ---
 
@@ -471,6 +471,7 @@ Requirements:
 * `answer-after=0` means answer automatically and immediately.
 * If a valid non-negative value is present, auto-answer after that number of seconds.
 * If the `Answer-After` parameter is present but cannot be parsed, do not auto-answer; treat it as a normal inbound call and record a diagnostic log entry.
+* A controlled outbound call never rings. `Answer-After` (including `answer-after=0`) enters DIALING, and the ringtone of §9.4 is bound to RINGING only, so the agent hears nothing before the leg is answered.
 
 ## 8.2 Outbound Call States
 
@@ -551,6 +552,7 @@ The Extension:
 * Provides no local answer button
 * Provides no reject button
 * Maintains RINGING internally only; Web SIP Phone displays no ringing UI
+* Plays the local ringtone described in §9.4 for as long as the call stays in RINGING
 
 ## 9.2 FreeSWITCH Remote Answer
 
@@ -592,6 +594,29 @@ Version 1 does not provide:
 * Local answer
 
 Inbound call timeout is controlled entirely by FreeSWITCH.
+
+## 9.4 Inbound Ringtone
+
+A normal inbound call is the only call the agent has to be told about: nothing on screen changes,
+and FreeSWITCH answers it remotely, so without a sound the agent would never know to speak. The
+Extension therefore plays a ringtone while the call state is RINGING.
+
+Requirements:
+
+* One ringtone asset is bundled with the Extension. It is never fetched from the network.
+* Playback loops for as long as the state is RINGING.
+* Playback starts on entering RINGING and stops immediately on leaving it, whatever the reason:
+  answered (Talk), cancelled (CANCEL), failed, or the session being discarded during a transport
+  rebuild. Answering stops the ringtone at the moment the answer is issued, not when the media
+  finally comes up.
+* Answering is the case that matters most: the ringtone must not still be playing when the caller's
+  audio arrives.
+* The ringtone plays in the Offscreen Document, on its own reusable `HTMLAudioElement`, separate
+  from the element carrying the remote call audio.
+* Only RINGING rings. DIALING (§8.1), ACTIVE, HELD, ENDED, and FAILED are silent.
+* Playback is best-effort. A browser that refuses to start the sound must not fail the call, break
+  the state machine, or raise a user-facing error; the refusal is recorded as a diagnostic log entry
+  and the call proceeds normally.
 
 ---
 
@@ -727,6 +752,24 @@ and a second independent INVITE unexpectedly arrives:
 
 Do not disrupt the current session.
 
+486 asserts that this user is on a call, so it is used only when that is true — i.e. exactly for
+the four states above. A session object that is still occupying the slot after its call already
+reached a terminal state (an `accept()` that failed, before SIP.js delivers `Terminated`) is a
+sub-second race in which the agent is talking to no one; that returns:
+
+```text
+480 Temporarily Unavailable
+```
+
+The distinction is not cosmetic. A queue such as FreeSWITCH `mod_callcenter` meters busy replies
+and rejections on separate timers (`busy_delay_time` vs `reject_delay_time`), and reports the
+agent's state to operations from the code it received.
+
+The list above is exhaustive: FAILED and ENDED are not busy states. Their reset window exists
+only to hold the ended call on screen for a moment, so an INVITE arriving inside it applies the
+RESET immediately and is accepted. Nothing about answering an INVITE may depend on a background
+timer having fired — see §13.3.
+
 ---
 
 # 13. State Model
@@ -767,6 +810,16 @@ ENDED
 * Web pages must not be able to modify Call State directly.
 * UI clicks must not modify Call State directly.
 * All state transitions are implemented in one place, not scattered across UI components.
+* An occupied session slot is not proof of a live call. `Terminated` is delivered by SIP.js's
+  own transaction timers, in the same hidden document, so a slot can outlive its call. A slot
+  held for longer than a short threshold while the Call State is not DIALING/RINGING/ACTIVE/HELD
+  is a zombie and is discarded on the next INVITE. Listeners on a discarded session must check
+  that the manager still owns it before acting, or a late `Terminated` tears down a later call.
+* No transition that gates SIP behavior may depend on a background timer having fired. The
+  offscreen document runs hidden, where Chrome throttles timers to the one-minute grid and can
+  drop them across a freeze; a timer is allowed to drive when the UI *notices* a change, never
+  whether the next INVITE is answerable. The FAILED/ENDED → IDLE reset is therefore also applied
+  on demand by `handleInvite`, with its timer kept only as the cosmetic fast path.
 
 ---
 
@@ -842,7 +895,7 @@ It must not duplicate anything the existing agent softphone bar already shows:
 * Agent status
 * Answer, hangup, hold, resume, or mute controls
 
-`DIALING`, `RINGING`, `ACTIVE`, and `HELD` remain internal state-machine states used to execute FreeSWITCH SIP control signaling correctly; they are never expanded into a second softphone UI.
+`DIALING`, `RINGING`, `ACTIVE`, and `HELD` remain internal state-machine states used to execute FreeSWITCH SIP control signaling correctly; they are never expanded into a second softphone UI. The inbound ringtone (§9.4) is the sole exception to call states being invisible, and it is an audible one: RINGING makes a sound, it still renders nothing.
 
 ## 14.4 Error State (Auto-Expand)
 
@@ -1088,6 +1141,7 @@ Version 1 does not provide:
 * A local mute button
 * Input volume control
 * Output volume control
+* Ringtone selection or ringtone volume control (the §9.4 ringtone is a single bundled asset played at the system volume)
 
 ---
 
@@ -1187,7 +1241,6 @@ Explicitly do not implement:
 * Click to Call
 * Number detection in pages
 * Device switching
-* Local ringtone playback
 * Custom ringtone configuration
 * Session resume across a page reload (Verto-style): SIP sessions and `RTCPeerConnection`s are never serialized or restored — the runtime simply outlives the page (§6.5)
 * Firefox or Safari support
@@ -1228,6 +1281,9 @@ Cover at least:
 * Repeated Hold
 * Talk in an invalid state
 * Hold in an invalid state
+* The ringtone starts on READY → RINGING and on no other transition
+* Every transition out of RINGING stops the ringtone
+* A refused ringtone playback leaves the call state untouched
 
 ### Allow Site
 
@@ -1270,12 +1326,12 @@ Using a mock SIP transport or a controllable SIP test environment, cover:
 2. REGISTER failure.
 3. WSS disconnect and reconnect.
 4. INVITE + Answer-After auto-answer.
-5. A normal INVITE showing RINGING.
-6. Answering after Talk is received while RINGING.
+5. A normal INVITE showing RINGING and starting the ringtone.
+6. Answering after Talk is received while RINGING, stopping the ringtone.
 7. Entering ACTIVE after Talk is received while DIALING.
 8. Hold received while ACTIVE.
 9. Talk received while HELD.
-10. CANCEL received while RINGING.
+10. CANCEL received while RINGING, stopping the ringtone.
 11. BYE received while ACTIVE.
 12. BYE received while HELD.
 13. ICE failure.
@@ -1291,6 +1347,7 @@ Verify in a real FreeSWITCH environment:
 * REGISTER / unregister
 * Agent First outbound calls
 * Normal inbound calls
+* The inbound ringtone: audible while RINGING, silent on Agent First outbound calls
 * BroadSoft `Event: talk`
 * BroadSoft `Event: hold`
 * CANCEL
@@ -1315,16 +1372,16 @@ All of the following must be satisfied:
 5. Multiple Allow Site tabs produce only one REGISTER.
 6. All Allow Site tabs show and synchronize the same Web SIP Phone state.
 7. When the INVITE contains Answer-After, the internal state enters DIALING and the call is auto-answered.
-8. When the INVITE does not contain Answer-After, the internal state enters RINGING and no auto-answer occurs.
-9. Talk received while RINGING answers the call and enters ACTIVE.
+8. When the INVITE does not contain Answer-After, the internal state enters RINGING, the bundled ringtone loops, and no auto-answer occurs.
+9. Talk received while RINGING stops the ringtone, answers the call, and enters ACTIVE.
 10. Talk received while DIALING enters ACTIVE.
 11. Hold received while ACTIVE enters HELD.
 12. Talk received while HELD returns to ACTIVE.
-13. CANCEL received while RINGING ends the call.
+13. CANCEL received while RINGING stops the ringtone and ends the call.
 14. BYE received while ACTIVE or HELD ends the call.
 15. A DIALING failure produces no Web SIP Phone UI; the detailed reason goes to the diagnostic log only.
 16. An unexpected second INVITE returns 486 Busy Here.
-17. Web SIP Phone stays collapsed in all normal states, including during calls — a call only tints the button and its tooltip — and never shows numbers, call duration, or call controls.
+17. Web SIP Phone stays collapsed in all normal states, including during calls — a call only tints the button and its tooltip, and only a RINGING call makes a sound — and never shows numbers, call duration, or call controls.
 18. Web SIP Phone auto-expands only on registration failure, WSS loss, microphone failure, or media failure, replacing the affected panel row in place with one imperative line (including the failure's reason phrase), a retry countdown while backing off, and exactly one emphasised recovery action.
 19. Web SIP Phone docks at the top-right corner by default.
 20. Web SIP Phone supports free dragging on both axes (clamped to the viewport), persists the last position, and clicking it opens the `Voice connection` panel: extension identity, merged Signaling (with the registration expiry counting down), microphone device and live level, and TURN — with the four raw signals behind a collapsed chevron, and never any call information.

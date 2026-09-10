@@ -52,6 +52,10 @@ describe("FreeSWITCH-controlled outbound (Agent First)", () => {
     h.transport().deliver(notify(dialog, "talk"));
     const resumeInvite = await h.sentRequest("INVITE", beforeResume);
     expect(resumeInvite).toContain("a=sendrecv");
+
+    // An Agent First call is silent from end to end: `answer-after` enters DIALING, and the
+    // ringtone is bound to RINGING only (design.md §8.1, §9.4).
+    expect(h.ringtoneCalls).toEqual([]);
   });
 
   it("11. BYE while ACTIVE ends the call and clears callInProgress", async () => {

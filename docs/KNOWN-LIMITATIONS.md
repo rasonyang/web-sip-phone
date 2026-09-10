@@ -20,8 +20,20 @@ local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, v
   when the user has not granted microphone permission — an Agent First call with no microphone
   access fails rather than silently auto-answering without audio.
 - **Single account, single call.** Only one SIP account and one concurrent SIP session are
-  supported. An unexpected second INVITE while a session is active is rejected with `486 Busy
-  Here`; the existing session is unaffected.
+  supported. An unexpected second INVITE while a call is genuinely in progress (DIALING, RINGING,
+  ACTIVE, HELD) is rejected with `486 Busy Here`; the existing session is unaffected. If the slot
+  is occupied only by an already-terminal session the reply is `480 Temporarily Unavailable`
+  instead — the agent is not on a call, and 486 would both misreport them as busy and land on a
+  switch's busy timer rather than its rejection timer. Either rejection is bounded: a slot still
+  occupied 15 s after the call left a progress state is discarded, because a switch offers no
+  guard of its own here — against FreeSWITCH `mod_callcenter`, a 486 maps to `USER_BUSY`, does
+  not count toward `max_no_answer`, and leaves the agent in rotation (verified 2026-08-24). A call that has just ended is *not* busy: the
+  FAILED/ENDED reset window is drained on the spot when an INVITE arrives (`handleInvite` in
+  `src/offscreen/call-session.ts`) rather than waiting for its timer, so a queue dispatch that
+  lands a few hundred milliseconds after the previous call ended is answered, not rejected.
+  This matters twice over in an offscreen document: Chrome throttles background timers to the
+  one-minute grid and may drop them entirely, and a switch such as FreeSWITCH `mod_callcenter`
+  can hold an agent out of rotation for a full `reject_delay_time` after a single 486.
 - **Changing the account or TURN settings during a call is deferred until the call ends.** Saving
   new settings restarts the SIP runtime so the new credentials take effect immediately, except
   while a call is in progress — a settings edit must not drop a live call, so the restart waits
@@ -38,3 +50,10 @@ local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, v
   worker's init sequence. This has not caused a failure in testing, but it is a known deviation
   from the strict MV3 recommendation and is worth specifically watching for missed events (e.g. a
   tab-close or message arriving right as the worker wakes) during manual/live acceptance testing.
+- **The ringtone is one fixed bundled sound at the system volume.** `static/sounds/ringtone.wav` is
+  the only ringtone; there is no picker and no volume control (design.md §9.4, §17). The sound can be
+  changed only by editing the constants in `scripts/gen-ringtone.mjs`, regenerating the asset with
+  `npm run gen-ringtone`, and rebuilding. Playback is also
+  best-effort: an extension offscreen document is not subject to Chrome's autoplay gesture
+  requirement, but if `play()` is ever refused the rejection is swallowed into the diagnostic log —
+  the call still arrives and is still answerable, just silently.

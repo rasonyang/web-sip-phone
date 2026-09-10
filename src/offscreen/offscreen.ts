@@ -1,9 +1,12 @@
 import { isMsg, type Msg } from "../shared/messages.js";
 import { MicMeter } from "./mic-meter.js";
+import { Ringtone } from "./ringtone.js";
 import { realUaFactory } from "./sipjs-adapter.js";
 import { SipRuntime } from "./sip-runtime.js";
 
 const audio = document.getElementById("remote-audio") as HTMLAudioElement;
+// The ringtone keeps its own element: `remote-audio` is srcObject-bound to the live call.
+const ringtone = new Ringtone(document.getElementById("ringtone") as HTMLAudioElement);
 
 const send = (msg: Msg): void => void chrome.runtime.sendMessage(msg).catch(() => {});
 
@@ -17,6 +20,7 @@ const meter: MicMeter = new MicMeter({
 const runtime: SipRuntime = new SipRuntime({
   factory: realUaFactory,
   audio,
+  ringtone,
   micLevel: (): number | null => meter.level(),
   onStatus: (status) => send({ target: "background", type: "offscreen/status", status })
 });

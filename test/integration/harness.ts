@@ -40,14 +40,24 @@ export function testUaFactory(): UaFactory {
 
 export function makeHarness() {
   const statuses: OffscreenStatus[] = [];
+  // Records the ringtone calls the runtime makes, in order, so inbound tests can assert the
+  // §9.4 behavior end to end without a DOM audio element.
+  const ringtoneCalls: Array<"start" | "stop"> = [];
   const runtime = new SipRuntime({
     factory: testUaFactory(),
     audio: {} as HTMLAudioElement,
+    ringtone: {
+      start: () => void ringtoneCalls.push("start"),
+      stop: () => void ringtoneCalls.push("stop")
+    },
     onStatus: (s) => statuses.push(s)
   });
   return {
     runtime,
     statuses,
+    ringtoneCalls,
+    /** True once start() has been called and not (yet) followed by a stop(). */
+    ringing: (): boolean => ringtoneCalls[ringtoneCalls.length - 1] === "start",
     last: () => statuses[statuses.length - 1],
     transport: () => MockTransport.latest(),
     /** Wait until the client has sent a request of the given method, then return it. */

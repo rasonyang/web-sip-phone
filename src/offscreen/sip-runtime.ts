@@ -4,6 +4,7 @@ import { CallState, selectDisplayError } from "../shared/state.js";
 import { CallSessionManager, type InvitationLike } from "./call-session.js";
 import { diag } from "./diag-log.js";
 import { MIC_CONSTRAINTS, probeMicPermission, readMicLabel } from "./media.js";
+import type { RingtonePlayer } from "./ringtone.js";
 
 export interface UaLike {
   start(): Promise<void>;
@@ -167,6 +168,7 @@ export class SipRuntime {
     private deps: {
       factory: UaFactory;
       audio: HTMLAudioElement;
+      ringtone: RingtonePlayer;
       onStatus(s: OffscreenStatus): void;
       /** Current microphone level, when a panel is expanded and metering is on. */
       micLevel?(): number | null;
@@ -174,6 +176,7 @@ export class SipRuntime {
   ) {
     this.sessions = new CallSessionManager({
       audio: deps.audio,
+      ringtone: deps.ringtone,
       onChange: (state, inProgress) => {
         this.callInProgress = inProgress;
         if (state === CallState.Dialing || state === CallState.Ringing) {
@@ -230,6 +233,10 @@ export class SipRuntime {
       await this.stop();
     }
     this.running = true;
+    // A restart inherits whatever the previous run left behind. stop() clears the reset
+    // timer without running the RESET, so a runtime stopped inside a FAILED/ENDED window
+    // would come back parked there; nothing about the old run survives into this one.
+    this.sessions.forceIdle();
     this.errors.clear();
     this.errorReasons.clear();
     this.attemptQueued = false;
