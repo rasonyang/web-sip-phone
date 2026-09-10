@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Web SIP Phone",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Keeps a WebRTC SIP extension registered over WSS and shows a headset button with live connection status on the pages you allow.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "offscreen", "scripting", "tabs"],

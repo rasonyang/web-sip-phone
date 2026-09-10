@@ -65,7 +65,7 @@ Signaling  ✓ WSS · expires in 4:12                    ›
 Microphone ✓ MacBook Pro Microphone              ▁▃▅▇
 TURN       ⚠ Not configured
 ──────────────────────────────────────────────────────
-Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.3
+Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.4
 ```
 
 - **Signaling** merges SIP registration and WebSocket — in SIP-over-WSS they cannot disagree —

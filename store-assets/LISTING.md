@@ -6,7 +6,7 @@ changes, change it here in the same commit.
 
 - **Category:** Workflow & Planning
 - **Language:** English
-- **Version:** 1.0.3
+- **Version:** 1.0.4
 - **Privacy policy URL:** https://github.com/rasonyang/web-sip-phone/blob/main/PRIVACY.md
 - **Support URL:** https://github.com/rasonyang/web-sip-phone/issues
 
@@ -38,6 +38,8 @@ HOW IT WORKS
 • Registers a single SIP extension over secure WebSocket (WSS)
 • Auto-answers server-initiated calls (Call-Info answer-after)
 • Supports remote talk/hold control (BroadSoft Event: talk/hold)
+• Rings on a normal inbound call — one bundled ringtone, played by the extension itself
+  until the call is answered or cancelled; server-initiated calls stay silent
 • Click the button for the Voice connection panel: which extension you are on which
   server, signalling health with the registration expiry counting down, your
   microphone with its device name and a live input level, and TURN readiness
