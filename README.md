@@ -83,6 +83,13 @@ Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.3
 - **Copy diagnostics** puts the version, account, every signal state, the last error and the
   relevant timestamps on the clipboard. Credentials are never included.
 
+## Testing the ringtone
+Place a normal call to the account from another extension (no `Call-Info: …;answer-after=…`): the
+ringtone starts as the INVITE arrives and stops on `uuid_phone_event <uuid> talk`, on CANCEL, or on
+any other exit from RINGING. An Agent First call must stay silent. Chrome's autoplay policy does
+not apply to the extension's own offscreen document, but a refused `play()` is caught, logged to the
+diagnostic log, and never fails the call.
+
 ## Testing Talk/Hold against FreeSWITCH
 `uuid_phone_event <uuid> talk` while ringing answers the browser leg; `hold` puts an active call on
 hold (re-INVITE sendonly); `talk` again resumes. See docs/FREESWITCH.md for a full walkthrough.
@@ -107,7 +114,7 @@ Web SIP Phone runs four cooperating pieces, all in `src/`:
   every open Allow Site tab.
 - **Offscreen document** (`src/offscreen`) — the single global SIP.js `UserAgent`, the SIP over
   WSS connection, REGISTER/unregister, the one allowed SIP session, microphone acquisition, remote
-  audio playback, and the call state machine (`READY → DIALING/RINGING → ACTIVE ⇄ HELD → ENDED`)
+  audio playback, the inbound ringtone, and the call state machine (`READY → DIALING/RINGING → ACTIVE ⇄ HELD → ENDED`)
   driven by INVITE, CANCEL, BYE, and BroadSoft `NOTIFY`/`Event: talk`/`Event: hold`. State changes
   are broadcast to the service worker; nothing here is rendered directly.
 - **Content script** (`src/content`) — injected only into top-level Allow Site pages (never
@@ -136,13 +143,23 @@ state and shows the call already in progress. There is no `beforeunload` prompt 
 resume: nothing is serialized or restored, the runtime simply outlives the page. See design.md
 §6.5.
 
+**One call state does make a sound.** A normal inbound call (no `Answer-After`) enters RINGING, and
+the offscreen document loops the bundled ringtone `static/sounds/ringtone.wav` on its own
+`<audio>` element until the state leaves RINGING — answered, cancelled, failed, or discarded with
+the transport. Answering stops it the moment the answer is issued, not when media comes up. Agent
+First calls (`answer-after=…`) go to DIALING and stay silent. There is no ringtone picker and no
+volume control in version 1; the sound is changed by editing the constants at the top of
+`scripts/gen-ringtone.mjs` and running `npm run gen-ringtone` (the script is deterministic — a
+plain regeneration reproduces the same bytes).
+
 ## Test coverage
 
-`npm test` runs 19 files / 225 tests: unit tests (header parsing, the call state machine, Allow
-Site matching, multiple-call rejection, error priority) plus integration tests against a mock SIP
-transport that exercise design.md §22.2 items 1–12 end to end (REGISTER success/failure, WSS
-disconnect/reconnect, Answer-After auto-answer, normal INVITE → RINGING, Talk while
-RINGING/DIALING/HELD, Hold while ACTIVE, CANCEL while RINGING, BYE while ACTIVE/HELD). The
+`npm test` runs 20 files / 247 tests: unit tests (header parsing, the call state machine, the
+ringtone player, Allow Site matching, multiple-call rejection, error priority) plus integration
+tests against a mock SIP transport that exercise design.md §22.2 items 1–12 end to end (REGISTER
+success/failure, WSS disconnect/reconnect, Answer-After auto-answer, normal INVITE → RINGING with
+the ringtone starting, Talk while RINGING/DIALING/HELD, Hold while ACTIVE, CANCEL while RINGING,
+BYE while ACTIVE/HELD). The
 remaining §22.2 items are covered elsewhere rather than in the integration suite:
 
 - Item 13 (ICE failure) — unit-covered in `test/offscreen/call-session.test.ts`.

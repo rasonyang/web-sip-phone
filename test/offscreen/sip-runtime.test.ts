@@ -125,6 +125,7 @@ function makeRuntime() {
   return new SipRuntime({
     factory,
     audio: {} as HTMLAudioElement,
+    ringtone: { start: () => {}, stop: () => {} },
     onStatus: (s) => statuses.push(s),
     micLevel: () => micLevel_
   });

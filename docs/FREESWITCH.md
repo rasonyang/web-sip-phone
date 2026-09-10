@@ -74,7 +74,8 @@ originate {origination_caller_id_number=...,sip_h_Call-Info=<sip:fs>;answer-afte
 
 - `Call-Info: <sip:fs>;answer-after=0` on the INVITE to `user/1001` is what Web SIP Phone recognizes as
   an Agent First call: it enters the internal `DIALING` state and auto-answers without any local
-  UI. `answer-after=<N>` (any non-negative integer of seconds) delays auto-answer instead of
+  UI and without ringing — the ringtone is bound to `RINGING` only, so an Agent First call is
+  always silent. `answer-after=<N>` (any non-negative integer of seconds) delays auto-answer instead of
   answering immediately; a present-but-unparseable value is treated as a normal inbound call
   (Web SIP Phone logs it and does not auto-answer).
 - Once the destination answers and FreeSWITCH completes the bridge, send `Event: talk` in the
@@ -89,7 +90,8 @@ during the call):
 uuid_phone_event <uuid> talk
 ```
 
-- While `RINGING` (normal inbound, no `Answer-After`): answers the call, `RINGING → ACTIVE`.
+- While `RINGING` (normal inbound, no `Answer-After`): stops the ringtone and answers the call,
+  `RINGING → ACTIVE`.
 - While `DIALING` (Agent First, before the bridge completes): marks the destination answered,
   `DIALING → ACTIVE`.
 - While `HELD`: resumes the call, `HELD → ACTIVE` (no separate `Event: resume` exists).
@@ -118,11 +120,11 @@ instance and an unpacked build of `dist/`.
 | 1 | SIP over WSS | Load unpacked build, configure Account, open an Allow Site tab; confirm registration succeeds and the Web SIP Phone dot shows no error | |
 | 2 | Two-way WebRTC audio | Place a test call (Agent First or inbound) and confirm audio flows both directions | |
 | 3 | REGISTER / unregister | Open first Allow Site tab (REGISTER in FreeSWITCH logs); close last Allow Site tab (unregister, Expires: 0) | |
-| 4 | Agent First outbound calls | `originate` with `Call-Info: ;answer-after=0` to the account; confirm auto-answer with no local UI, then `Event: talk` moves to ACTIVE | |
-| 5 | Normal inbound calls | Call the account from another extension/trunk with no `Answer-After`; confirm Web SIP Phone shows no ringing UI internally (RINGING is internal-only) | |
-| 6 | BroadSoft `Event: talk` | `uuid_phone_event <uuid> talk` while RINGING and while DIALING; confirm ACTIVE in both cases | |
+| 4 | Agent First outbound calls | `originate` with `Call-Info: ;answer-after=0` to the account; confirm auto-answer with no local UI **and no ringtone**, then `Event: talk` moves to ACTIVE | |
+| 5 | Normal inbound calls | Call the account from another extension/trunk with no `Answer-After`; confirm the bundled ringtone loops for as long as the call rings, while Web SIP Phone still renders no ringing UI (RINGING is internal-only) | |
+| 6 | BroadSoft `Event: talk` | `uuid_phone_event <uuid> talk` while RINGING and while DIALING; confirm ACTIVE in both cases, and that the ringtone stops on the RINGING one before the caller's audio arrives | |
 | 7 | BroadSoft `Event: hold` | `uuid_phone_event <uuid> hold` while ACTIVE; confirm HELD, then `talk` to resume | |
-| 8 | CANCEL | Send CANCEL before answer on a RINGING call; confirm call ends with no UI | |
+| 8 | CANCEL | Send CANCEL before answer on a RINGING call; confirm the ringtone stops immediately and the call ends with no UI | |
 | 9 | BYE | Send BYE from FreeSWITCH while ACTIVE and while HELD; confirm call ends cleanly in both states | |
 | 10 | Google STUN | Default config (no TURN); confirm ICE/media succeeds on a normal (non-symmetric-NAT) network | |
 | 11 | Custom TURN | Configure TURN under Advanced, restart the runtime (close/reopen the last Allow Site tab or Retry), confirm a call succeeds through TURN | |

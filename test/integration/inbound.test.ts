@@ -21,6 +21,7 @@ describe("normal inbound calls", () => {
     const before = h.transport().sent.length;
     h.transport().deliver(raw);
     await vi.waitFor(() => expect(h.last().callInProgress).toBe(true)); // RINGING counts as in progress
+    expect(h.ringing()).toBe(true); // design.md §9.4: the ringtone loops for as long as it rings
 
     // Client auto-sends 180 Ringing (autoSendAnInitialProvisionalResponse); this also sets up
     // the early-dialog delegate so the NOTIFY below can be routed. Learn the client's dialog
@@ -45,6 +46,7 @@ describe("normal inbound calls", () => {
     });
     h.transport().deliver(ackFor(ok, dialog));
     await vi.waitFor(() => expect(h.last().callInProgress).toBe(true));
+    expect(h.ringing()).toBe(false); // answered: silenced before the caller's audio arrives
   });
 
   it("10. CANCEL while RINGING ends the call quietly", async () => {
@@ -52,8 +54,10 @@ describe("normal inbound calls", () => {
     const { raw, dialog } = serverInvite({ user: "1001", domain: "voice.example.com" });
     h.transport().deliver(raw);
     await vi.waitFor(() => expect(h.last().callInProgress).toBe(true));
+    expect(h.ringing()).toBe(true);
     h.transport().deliver(cancel(dialog));
     await vi.waitFor(() => expect(h.last().callInProgress).toBe(false));
+    expect(h.ringing()).toBe(false);
     expect(h.last().errors).toEqual([]);
   });
 

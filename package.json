@@ -9,6 +9,7 @@
     "shoot": "node scripts/shoot.mjs",
     "test": "vitest run",
     "gen-icons": "node scripts/gen-icons.mjs",
+    "gen-ringtone": "node scripts/gen-ringtone.mjs",
     "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {
