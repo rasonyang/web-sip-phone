@@ -174,7 +174,10 @@ Registration retries automatically once access is granted.
 **Deep links.** `chrome-extension://<extensionId>/options.html?site=<hostname>` opens Options on
 Allow Sites with a one-click *Allow &lt;hostname&gt;* button, and closes itself once granted if a page
 opened it. `chrome-extension://<extensionId>/options.html#microphone` opens Advanced at the
-microphone test. `extensionId` comes from the `hello` reply — do not hard-code it.
+microphone test. `extensionId` comes from the `hello` reply — do not hard-code it. The manifest
+carries the Web Store public `key`, so an unpacked build from `dist/` gets the same id as the store
+listing (`dkhaojcfjdcdpldokeokajkmambkbacp`); Chrome will not run both at once, so disable the store
+copy while loading unpacked.
 
 ```js
 if (!document.documentElement.dataset.webSipPhone) return; // not installed, or site not allowed
