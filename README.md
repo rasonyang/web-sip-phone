@@ -51,9 +51,12 @@ originations, and `uuid_phone_event <uuid> talk|hold` for remote answer/hold/res
   WebSocket host need not be the SIP domain. Plain `ws://` leaves SIP signaling unencrypted (media
   is still DTLS-SRTP, but its fingerprints travel in cleartext SDP): trusted networks only, see
   docs/FREESWITCH.md §1.
-- **Allow Sites**: exact hostnames, HTTPS only, one per entry. Adding a site triggers a Chrome
-  per-site permission prompt; removing revokes it. Registration only happens while at least one
-  Allow Site tab is open.
+- **Allow Sites**: exact hostnames, one per entry — no wildcards, no subdomain inheritance, and no
+  scheme, port or path in the box. Ports never take part in matching, so one entry covers every port
+  on that host. HTTPS only, except private-network addresses (`localhost` and any `.localhost` name,
+  `127.x`, `10.x`, `172.16.x`–`172.31.x`, `192.168.x`), which are also allowed over HTTP. Adding a
+  site triggers a Chrome per-site permission prompt; removing revokes it. Registration only happens
+  while at least one Allow Site tab is open.
 - **Microphone**: use *Advanced → Test microphone* once to grant access. Without it Web SIP Phone will
   not register and shows "Microphone unavailable".
 - **STUN/TURN**: Google STUN by default; optional TURN under Advanced (takes effect on the next call).
@@ -106,7 +109,7 @@ hold (re-INVITE sendonly); `talk` again resumes. See docs/FREESWITCH.md for a fu
 | Voice server unreachable | Network and WebSocket endpoint (scheme, port and path of Server URL must match the sofia `ws-binding`/`wss-binding`); `Retry now` in the panel; backoff continues automatically |
 | Microphone blocked | Options → Advanced → Test microphone (the panel's own test hands you there — only the Options page can raise Chrome's prompt), or chrome://settings/content/microphone |
 | Call audio failed | Configure TURN (Advanced); typical on symmetric NAT |
-| No dot on the page | Site listed exactly (no subdomain difference), HTTPS, permission granted |
+| No dot on the page | Site listed exactly (no subdomain difference); HTTPS, or HTTP on a private-network address (`localhost`/`.localhost`, `127.x`, `10.x`, `172.16.x`–`172.31.x`, `192.168.x`); permission granted |
 
 ## Architecture
 
