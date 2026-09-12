@@ -2,6 +2,7 @@ import type { DotPosition, StoredDotPosition } from "../shared/config.js";
 import { isMsg, type Msg, type TabState } from "../shared/messages.js";
 import { RuntimeState, type DisplayState } from "../shared/state.js";
 import { applyPosition, clampPixels, positionFromPixels } from "./drag.js";
+import { PageBridge } from "./page-bridge.js";
 import { WebSipPhoneView, type UiIntent } from "./view.js";
 
 // Top-level pages only; dynamic registration already excludes iframes, this is defense in depth.
@@ -41,6 +42,24 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
     { version: chrome.runtime.getManifest().version }
   );
 
+  // The page-facing provisioning bridge. Attached before the first state fetch so the presence
+  // marker on <html> is in place synchronously on injection, whatever the service worker is doing.
+  const bridge = new PageBridge({
+    win: window,
+    version: chrome.runtime.getManifest().version,
+    extensionId: chrome.runtime.id,
+    send,
+    // `undefined` and "no answer" must stay distinguishable: an explicit `undefined` reply is the
+    // worker declining (this site is no longer allowed) and tears the bridge down, while a rejected
+    // sendMessage is only a sleeping or missing worker and is reported as `null`.
+    request: (m) =>
+      chrome.runtime
+        .sendMessage(m)
+        .then((r) => (r === undefined ? undefined : (r as TabState)))
+        .catch(() => null)
+  });
+  bridge.attach();
+
   // No unload guard: a reload or navigation of this page does not own the call. The SIP session,
   // the WebRTC peer connection and the audio all live in the offscreen document, which the
   // service worker keeps alive while a call is in progress (design.md §6.5). A fresh content
@@ -56,6 +75,7 @@ if (window.top === window && !document.getElementById("web-sip-phone-host")) {
     lastPos = ts.pos;
     lastState = ts.state;
     view.update(ts.state);
+    bridge.publish(ts.state);
     applyPosition(host, ts.pos);
     if (firstState) {
       // Opening the page while the voice link is in a failed state should recover it

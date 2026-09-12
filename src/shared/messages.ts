@@ -1,4 +1,5 @@
 import type { DotPosition, StoredDotPosition } from "./config.js";
+import type { ProvisionRequest } from "./page-protocol.js";
 import type { DisplayState, ErrorCode, FaultDetail, LinkStatus, ReconnectProgress } from "./state.js";
 
 export type Phase = "stopped" | "connecting" | "registering" | "ready";
@@ -29,7 +30,11 @@ export interface RuntimeConfig {
   sipUri: string;
   serverUrl: string;
   username: string;
-  password: string;
+  /** Plaintext SIP password (manual source only). Mutually exclusive with a1Hash. */
+  password?: string;
+  /** md5(account:realm:password) supplied by a host page (provisioned source only). */
+  a1Hash?: string;
+  credentialSource: "manual" | "provisioned";
   iceServers: RTCIceServer[];
 }
 
@@ -57,6 +62,13 @@ export type Msg =
   | { target: "background"; type: "ui/testMic" }
   | { target: "background"; type: "ui/panelState"; open: boolean }
   | { target: "background"; type: "config/changed" }
+  // Options "Re-sync": re-broadcast state to every Allow Site tab so host pages re-evaluate
+  // whether to provision, and restart the provisioning grace window.
+  | { target: "background"; type: "ui/resync" }
+  // Page ↔ extension provisioning, relayed by the content script on behalf of a host page.
+  | { target: "background"; type: "page/hello" }
+  | { target: "background"; type: "page/provision"; credential: ProvisionRequest }
+  | { target: "background"; type: "page/deprovision" }
   | { target: "content"; type: "mic/level"; level: number }
   | { target: "content"; type: "state/update"; state: DisplayState; pos: StoredDotPosition | null }
   | { target: "options"; type: "state/update"; state: DisplayState };

@@ -1,5 +1,8 @@
 import type { OffscreenStatus } from "../shared/messages.js";
 import {
+  type CredentialSource,
+  type ProvisionFault,
+  type ProvisionStatus,
   type DisplayState,
   type ErrorCode,
   IDLE_LINK,
@@ -21,6 +24,16 @@ export interface Identity {
   domain: string | null;
   serverUrl: string | null;
   turnConfigured: boolean;
+  /** Where the active credential came from; absent means none is configured yet. */
+  credentialSource?: CredentialSource;
+  /** Origin of the host page that provisioned the credential, if any. */
+  provisionedBy?: string | null;
+  provisionStatus?: ProvisionStatus;
+  provisionedAccount?: string | null;
+  provisionedDomain?: string | null;
+  provisionLastSyncAt?: number | null;
+  provisionFault?: ProvisionFault;
+  manualOverride?: boolean;
 }
 
 export function computeDisplayState(input: {
@@ -45,10 +58,22 @@ export function computeDisplayState(input: {
     reconnect: offscreen?.reconnect ?? null,
     micDeviceLabel: offscreen?.micDeviceLabel ?? null,
     micLevel: offscreen?.micLevel ?? null,
-    lastError: offscreen?.lastError ?? null
+    lastError: offscreen?.lastError ?? null,
+    credentialSource: identity?.credentialSource ?? "NONE",
+    provisionedBy: identity?.provisionedBy ?? null,
+    provisionStatus: identity?.provisionStatus ?? "NONE",
+    provisionedAccount: identity?.provisionedAccount ?? null,
+    provisionedDomain: identity?.provisionedDomain ?? null,
+    provisionLastSyncAt: identity?.provisionLastSyncAt ?? null,
+    provisionFault: identity?.provisionFault ?? null,
+    manualOverride: identity?.manualOverride ?? false
   };
 
-  if (!configured) {
+  // Not while a call is in progress, for the same reason as the tab check below: `configured`
+  // can go false mid-call (a provisioned-only credential is dropped when its last Allow Site
+  // tab closes) while the runtime keeps carrying the call, and "unconfigured, not busy" would
+  // report that call as not happening.
+  if (!configured && !busy) {
     return { runtime: RuntimeState.Unconfigured, error: null, reconnecting: false, busy: false, link, details };
   }
   // Not while a call is in progress: the runtime lifetime rule keeps it alive with no Allow Site

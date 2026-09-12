@@ -27,6 +27,20 @@ describe("diag log", () => {
     expect(data.callId).toBe("keep-me");
   });
 
+  it("redacts the pre-hashed digest secret under either of its names", () => {
+    diag("sip", "provisioned start", {
+      a1Hash: "0123456789abcdef0123456789abcdef",
+      ha1: "x",
+      credentialSource: "PROVISIONED",
+      sipDomain: "voice.example.com"
+    });
+    const data = getDiagEntries()[0].data!;
+    expect(data.a1Hash).toBe("[redacted]");
+    expect(data.ha1).toBe("[redacted]");
+    expect(data.sipDomain).toBe("voice.example.com");
+    expect(JSON.stringify(data)).not.toContain("0123456789abcdef");
+  });
+
   it("redacts secret-bearing keys nested inside objects and arrays", () => {
     diag("sip", "auth", {
       headers: { Authorization: "Digest x", callId: "keep" },

@@ -11,7 +11,7 @@ import { clearAccount, loadConfig, saveConfig } from "../../src/background/confi
 
 describe("config store", () => {
   it("returns defaults when empty", async () => {
-    expect(await loadConfig()).toEqual({ account: null, allowSites: [], turn: null, dotPosition: null });
+    expect(await loadConfig()).toEqual({ account: null, allowSites: [], turn: null, dotPosition: null, manualOverride: false });
   });
 
   it("saves and merges patches", async () => {

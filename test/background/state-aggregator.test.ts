@@ -40,6 +40,19 @@ describe("computeDisplayState", () => {
     expect(s.runtime).toBe(RuntimeState.Ready);
     expect(s.busy).toBe(true);
   });
+  it("reports the live call, not UNCONFIGURED, when the credential is dropped mid-call", () => {
+    // A provisioned-only credential is dropped the moment its last Allow Site tab closes, so
+    // `configured` can go false while the runtime is still carrying the call it must not drop.
+    const s = computeDisplayState({
+      configured: false,
+      allowTabCount: 0,
+      offscreen: { ...base, callInProgress: true }
+    });
+    expect(s.busy).toBe(true);
+    expect(s.runtime).not.toBe(RuntimeState.Unconfigured);
+    expect(s.runtime).toBe(RuntimeState.Ready);
+  });
+
   it("CONNECTING while offscreen not yet reporting", () => {
     expect(computeDisplayState({ configured: true, allowTabCount: 1, offscreen: null }).runtime).toBe(
       RuntimeState.Connecting
@@ -83,7 +96,15 @@ describe("computeDisplayState", () => {
       reconnect: { attempt: 2, nextAttemptAt: 1_770_000_010_000 },
       micDeviceLabel: "Studio Mic",
       micLevel: 0.4,
-      lastError: { code: "REGISTRATION_FAILED", reasonPhrase: "403 Forbidden" }
+      lastError: { code: "REGISTRATION_FAILED", reasonPhrase: "403 Forbidden" },
+      credentialSource: "NONE",
+      provisionedBy: null,
+      provisionStatus: "NONE",
+      provisionedAccount: null,
+      provisionedDomain: null,
+      provisionLastSyncAt: null,
+      provisionFault: null,
+      manualOverride: false
     });
     expect(JSON.stringify(s)).not.toContain("password");
   });

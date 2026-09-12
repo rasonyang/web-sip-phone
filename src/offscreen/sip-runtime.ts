@@ -3,7 +3,7 @@ import type { ErrorCode, FaultDetail, LinkStatus, ReconnectProgress } from "../s
 import { CallState, selectDisplayError } from "../shared/state.js";
 import { CallSessionManager, type InvitationLike } from "./call-session.js";
 import { diag } from "./diag-log.js";
-import { MIC_CONSTRAINTS, probeMicPermission, readMicLabel } from "./media.js";
+import { acquireMicOnce, MIC_CONSTRAINTS, probeMicPermission, readMicLabel, watchMicPermission } from "./media.js";
 import type { RingtonePlayer } from "./ringtone.js";
 
 export interface UaLike {
@@ -163,6 +163,13 @@ export class SipRuntime {
   // racing a second reconnect()/register() pair against the first).
   private attemptInFlight = false;
   private attemptQueued = false;
+  /**
+   * Config held back because the microphone gate failed at start. A provisioned credential
+   * arrives from a host page that has no settings UI of its own, so the runtime retries by
+   * itself the moment the grant appears rather than waiting to be started again.
+   */
+  private micPendingConfig: RuntimeConfig | null = null;
+  private micWatchUnsub: (() => void) | null = null;
 
   constructor(
     private deps: {
@@ -208,6 +215,29 @@ export class SipRuntime {
     return code ? { code, reasonPhrase: this.errorReasons.get(code) ?? "" } : null;
   }
 
+  /** Forget a held-back provisioned config and stop listening for the permission grant. */
+  private clearMicPending(): void {
+    this.micPendingConfig = null;
+    this.micWatchUnsub?.();
+    this.micWatchUnsub = null;
+  }
+
+  /**
+   * The microphone became available while a provisioned start was gated on it. Retry that start
+   * with the config it was gated on — unless something has started the runtime since, in which
+   * case the held config is stale and the live one wins.
+   */
+  private retryAfterMicGrant(): void {
+    const cfg = this.micPendingConfig;
+    if (!cfg || this.running) {
+      return;
+    }
+    this.clearMicPending();
+    // Nothing awaits this restart, so a rejection here has no caller to surface it: log it
+    // rather than let it become an unhandled rejection.
+    this.start(cfg).catch((e) => diag("sip", "mic-gated restart failed", { error: String(e) }));
+  }
+
   /** The microphone track a live call already captured, for the offscreen level meter. */
   localAudioTrack(): MediaStreamTrack | null {
     return this.sessions.localAudioTrack();
@@ -243,26 +273,49 @@ export class SipRuntime {
     this.registerAttempts = 0;
     const gen = ++this.generation;
 
-    const mic = await probeMicPermission();
+    // A provisioned credential is verified with a real capture, not a permission probe: the
+    // host page that pushed it cannot open the Options page to fix a device that is missing or
+    // already in use, and "granted" alone does not prove the microphone works.
+    const provisionedSource = config.credentialSource === "provisioned";
+    const micOk = provisionedSource ? await acquireMicOnce() : (await probeMicPermission()) === "granted";
     if (gen !== this.generation) {
       return; // superseded by a subsequent stop()/start() while the mic probe was pending
     }
-    this.micOk = mic === "granted";
+    this.micOk = micOk;
     if (!this.micOk) {
       // Design §6.1: the SIP runtime starts only when the microphone is available.
-      this.raiseError("MICROPHONE_BLOCKED", "permission not granted");
+      this.raiseError("MICROPHONE_BLOCKED", provisionedSource ? "microphone unavailable" : "permission not granted");
       this.phase = "stopped";
       this.running = false;
+      if (provisionedSource) {
+        // Nothing else will re-start this: hold the config and come back on the grant.
+        this.micPendingConfig = config;
+        this.micWatchUnsub?.();
+        this.micWatchUnsub = watchMicPermission(() => this.retryAfterMicGrant());
+      }
       this.report();
       return;
     }
+    this.clearMicPending();
     this.micLabel = await readMicLabel();
 
     this.phase = "connecting";
     this.report();
 
     this.config = config;
-    this.createUa(config);
+    try {
+      this.createUa(config);
+    } catch (e) {
+      // A config the UA constructor refuses (a SIP URI it cannot parse, a transport URL it
+      // rejects) would otherwise throw out of start() into a void-ed caller, leaving `running`
+      // true and the runtime wedged with no status to explain it. Report it as what it is.
+      diag("sip", "UA construction failed", { error: String(e) });
+      this.raiseError("REGISTRATION_FAILED", String(e));
+      this.phase = "stopped";
+      this.running = false;
+      this.report();
+      return;
+    }
     const ua = this.ua!;
 
     try {
@@ -503,6 +556,14 @@ export class SipRuntime {
 
   retry(): void {
     if (!this.running) {
+      // A provisioned start parked on the microphone gate is not "running", but it is exactly
+      // what the panel's Retry (and the content script's visibility nudge) is asking about:
+      // re-run the real capture gate. Without this, the only way out of the gate would be a
+      // permission *change* event, which never arrives when permission was granted all along
+      // and it was the device that was unusable.
+      if (this.micPendingConfig) {
+        this.retryAfterMicGrant();
+      }
       return;
     }
     this.attempts = 0;
@@ -535,6 +596,11 @@ export class SipRuntime {
       this.raiseError("MICROPHONE_BLOCKED", "permission denied or device unavailable");
     }
     this.report();
+    if (ok) {
+      // The panel's "Test microphone" is the other way the gate clears, and it must unblock a
+      // provisioned start exactly as the permission watcher does.
+      this.retryAfterMicGrant();
+    }
     return { ok, label: this.micLabel };
   }
 
@@ -566,6 +632,9 @@ export class SipRuntime {
     const gen = ++this.generation;
     this.attemptQueued = false;
     this.config = null;
+    // A stop while the mic gate is pending is a decision not to run: a grant arriving later
+    // must not resurrect a credential the worker has since dropped.
+    this.clearMicPending();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

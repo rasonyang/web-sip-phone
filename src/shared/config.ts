@@ -38,13 +38,20 @@ export interface WebSipPhoneConfig {
   allowSites: string[];
   turn: TurnConfig | null;
   dotPosition: StoredDotPosition | null;
+  /**
+   * Set when the user saves a manual account while a host page has provisioned one. While set,
+   * the manual account is applied and the provisioned credential is held read-only. Cleared by
+   * "Clear override" and by Sign Out. Never implied by a pre-existing manual account.
+   */
+  manualOverride: boolean;
 }
 
 export const DEFAULT_CONFIG: WebSipPhoneConfig = {
   account: null,
   allowSites: [],
   turn: null,
-  dotPosition: null
+  dotPosition: null,
+  manualOverride: false
 };
 
 export const DEFAULT_STUN = "stun:stun.l.google.com:19302";

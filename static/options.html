@@ -20,19 +20,26 @@
     <main>
       <section id="section-account">
         <h2>Account</h2>
-        <label>Server <input id="acc-server" placeholder="voice.example.com" autocomplete="off" /></label>
-        <p class="hint">Defaults to wss://; a port or path may be added. ws:// is only for private-network or local debugging.</p>
-        <p id="acc-server-warning" class="warning" role="status" hidden></p>
-        <label>Account <input id="acc-username" placeholder="1001" autocomplete="off" /></label>
-        <label>Password
-          <span class="pw-wrap">
-            <input id="acc-password" type="password" autocomplete="off" />
-            <button id="acc-pw-toggle" type="button" aria-label="Show password">👁</button>
-          </span>
-        </label>
+        <!-- Provisioning banner. Populated by options.ts; a <div> because it carries the Re-sync
+             button and, in the overridden state, a read-only line. -->
+        <div id="acc-provisioned" class="banner" role="status" hidden></div>
+        <!-- Manual-only state: the credential form is cloned in here, at the top level. -->
+        <div id="acc-manual-host"></div>
+        <!-- Provisioned states: the credential form exists only while this disclosure is open. -->
+        <details id="acc-manual" hidden>
+          <summary>
+            <svg class="chev" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+            <span class="summary-label">Configure a SIP account manually</span>
+            <span id="acc-manual-warn" class="warn-badge" hidden>
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>
+              <span id="acc-manual-reason"></span>
+            </span>
+          </summary>
+          <div id="acc-manual-body"></div>
+          <div id="acc-manual-actions" class="actions"></div>
+        </details>
         <p id="acc-status" class="status" role="status"></p>
         <div class="actions">
-          <button id="acc-save">Save</button>
           <button id="acc-signout" class="danger">Sign Out / Clear Account</button>
         </div>
         <p class="hint">Saving does not connect. Web SIP Phone registers automatically when an Allow Site page is open.</p>
@@ -46,13 +53,15 @@
           <button id="site-add">Add</button>
         </div>
         <p class="hint muted">Private-network hosts (localhost, 127.x, 10.x, 172.16–31.x, 192.168.x) are also accepted over HTTP.</p>
+        <button id="site-allow-deeplink" hidden></button>
         <p id="site-error" class="error" role="alert"></p>
+        <p id="site-status" class="status" role="status"></p>
         <ul id="site-list"></ul>
       </section>
 
       <section id="section-advanced" hidden>
         <h2>Advanced</h2>
-        <h3>Microphone</h3>
+        <h3 id="microphone">Microphone</h3>
         <p class="hint">Web SIP Phone needs microphone access to carry call audio.</p>
         <button id="mic-test">Test microphone</button>
         <p id="mic-status" class="status" role="status"></p>
@@ -78,6 +87,24 @@
         <p><a id="about-privacy" href="https://github.com/rasonyang/web-sip-phone/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">Privacy Policy</a></p>
       </section>
     </main>
+
+    <!-- The manual credential form. Kept in a template so that while a provisioned credential is
+         held and the disclosure is closed, no Server/Account/Password input exists in the DOM at
+         all. Cloned into #acc-manual-host (manual state) or #acc-manual-body (disclosure open). -->
+    <template id="acc-manual-form">
+      <label>Server <input id="acc-server" placeholder="voice.example.com" autocomplete="off" /></label>
+      <p class="hint">Defaults to wss://; a port or path may be added. ws:// is only for private-network or local debugging.</p>
+      <p id="acc-server-warning" class="warning" role="status" hidden></p>
+      <label>Account <input id="acc-username" placeholder="1001" autocomplete="off" /></label>
+      <label>Password
+        <span class="pw-wrap">
+          <input id="acc-password" type="password" autocomplete="off" />
+          <button id="acc-pw-toggle" type="button" aria-label="Show password">👁</button>
+        </span>
+      </label>
+      <p id="acc-override-note" class="override-note" hidden>Saving a manual account here overrides provisioning until you clear it.</p>
+      <div class="actions"><button id="acc-save">Save</button></div>
+    </template>
 
     <script type="module" src="options.js"></script>
   </body>

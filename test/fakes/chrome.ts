@@ -16,6 +16,8 @@ class FakeEvent<T extends unknown[]> {
 export interface FakeTab {
   id: number;
   url: string;
+  /** Set only on a tab a page opened; the options page uses it to decide whether to close itself. */
+  openerTabId?: number;
 }
 
 export function installFakeChrome() {
@@ -33,6 +35,10 @@ export function installFakeChrome() {
   const sentRuntimeMessages: unknown[] = [];
 
   const registeredScripts: Array<{ id: string; matches: string[] }> = [];
+
+  const permissionRequests: unknown[] = [];
+  const permissionRemovals: unknown[] = [];
+  const removedTabs: number[] = [];
 
   const fake = {
     _localData: localData,
@@ -58,6 +64,11 @@ export function installFakeChrome() {
     sentTabMessages,
     sentRuntimeMessages,
     registeredScripts,
+    permissionRequests,
+    permissionRemovals,
+    removedTabs,
+    /** Tab returned by tabs.getCurrent(); undefined outside a tab-hosted page. */
+    _currentTab: undefined as FakeTab | undefined,
 
     storage: {
       local: {
@@ -83,7 +94,14 @@ export function installFakeChrome() {
       },
       session: {
         get: async (key: string) => (key in sessionData ? { [key]: sessionData[key] } : {}),
-        set: async (items: Record<string, unknown>) => Object.assign(sessionData, items),
+        set: async (items: Record<string, unknown>) => {
+          const changes: Record<string, chrome.storage.StorageChange> = {};
+          for (const [k, v] of Object.entries(items)) {
+            changes[k] = { oldValue: sessionData[k], newValue: v };
+            sessionData[k] = v;
+          }
+          onChanged.fire(changes, "session");
+        },
         remove: async (key: string) => {
           delete sessionData[key];
         }
@@ -95,6 +113,10 @@ export function installFakeChrome() {
       query: async () => tabs.map((t) => ({ id: t.id, url: t.url })),
       sendMessage: async (tabId: number, message: unknown) => {
         sentTabMessages.push({ tabId, message });
+      },
+      getCurrent: async () => fake._currentTab,
+      remove: async (id: number) => {
+        removedTabs.push(id);
       },
       onRemoved: tabsOnRemoved,
       onUpdated: tabsOnUpdated
@@ -111,7 +133,10 @@ export function installFakeChrome() {
       openOptionsPage: async () => {
         fake.optionsOpened++;
       },
-      getContexts: async () => (fake._offscreenOpen ? [{ contextType: "OFFSCREEN_DOCUMENT" }] : [])
+      getContexts: async () => (fake._offscreenOpen ? [{ contextType: "OFFSCREEN_DOCUMENT" }] : []),
+      getManifest: () => ({ version: "9.9.9" }),
+      getURL: (path: string) => `chrome-extension://fake-id/${path}`,
+      id: "fake-id"
     },
 
     scripting: {
@@ -128,8 +153,14 @@ export function installFakeChrome() {
     },
 
     permissions: {
-      request: async () => fake._grantPermissions,
-      remove: async () => true
+      request: async (perms: unknown) => {
+        permissionRequests.push(perms);
+        return fake._grantPermissions;
+      },
+      remove: async (perms: unknown) => {
+        permissionRemovals.push(perms);
+        return true;
+      }
     },
 
     offscreen: {

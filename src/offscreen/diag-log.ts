@@ -6,7 +6,8 @@ export interface DiagEntry {
 }
 
 const CAPACITY = 200;
-const SECRET_KEY_RE = /password|credential|authorization/i;
+// `a1hash`/`ha1` are the digest secret in pre-hashed form: knowing one is enough to register.
+const SECRET_KEY_RE = /password|credential|authorization|a1hash|\bha1\b/i;
 
 let entries: DiagEntry[] = [];
 

@@ -34,6 +34,28 @@ export function selectDisplayError(errors: ErrorCode[]): ErrorCode | null {
   return null;
 }
 
+/**
+ * Where the active SIP credential came from. PROVISIONED credentials are pushed in by an
+ * allowed host page and never persist to the Options form.
+ */
+export type CredentialSource = "NONE" | "MANUAL" | "PROVISIONED";
+
+/**
+ * What the extension holds from a host page, independent of what it applies.
+ * NONE: nothing held. ACTIVE: held and applied (credentialSource is PROVISIONED).
+ * OVERRIDDEN: held but not applied because the user saved a manual account while provisioned
+ * (credentialSource is MANUAL, and the held values are shown read-only in Options).
+ */
+export type ProvisionStatus = "NONE" | "ACTIVE" | "OVERRIDDEN";
+
+/**
+ * Why provisioning has not produced a usable credential. NOT_RECEIVED: an Allow Site page said
+ * hello (or the user asked for a re-sync) and no valid provision arrived within the grace
+ * window. INVALID: a provision arrived but was rejected by validation (missing or malformed
+ * account/sipDomain/wssUrl/a1Hash/expiresAt). Cleared by the next accepted provision.
+ */
+export type ProvisionFault = null | "NOT_RECEIVED" | "INVALID";
+
 export interface LinkStatus {
   registration: "up" | "connecting" | "down";
   websocket: "up" | "connecting" | "down";
@@ -84,6 +106,18 @@ export interface StatusDetails {
   /** 0..1 RMS, sampled in the offscreen document; live only while a panel is expanded. */
   micLevel: number | null;
   lastError: FaultDetail | null;
+  credentialSource: CredentialSource;
+  /** Origin of the host page whose credential is held, null when provisionStatus is NONE. */
+  provisionedBy: string | null;
+  provisionStatus: ProvisionStatus;
+  /** Account / realm of the held provisioned credential (read-only display), null when NONE. */
+  provisionedAccount: string | null;
+  provisionedDomain: string | null;
+  /** Epoch ms the held credential was last accepted from the page ("last sync"). */
+  provisionLastSyncAt: number | null;
+  provisionFault: ProvisionFault;
+  /** The user saved a manual account while provisioned; manual wins until cleared. */
+  manualOverride: boolean;
 }
 
 export const EMPTY_DETAILS: StatusDetails = {
@@ -95,7 +129,15 @@ export const EMPTY_DETAILS: StatusDetails = {
   turnConfigured: false,
   micDeviceLabel: null,
   micLevel: null,
-  lastError: null
+  lastError: null,
+  credentialSource: "NONE",
+  provisionedBy: null,
+  provisionStatus: "NONE",
+  provisionedAccount: null,
+  provisionedDomain: null,
+  provisionLastSyncAt: null,
+  provisionFault: null,
+  manualOverride: false
 };
 
 export interface DisplayState {

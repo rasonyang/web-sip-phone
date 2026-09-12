@@ -10,7 +10,8 @@ const KEYS = {
   account: "websipphone.account",
   allowSites: "websipphone.allowSites",
   turn: "websipphone.turn",
-  dotPosition: "websipphone.dotPosition"
+  dotPosition: "websipphone.dotPosition",
+  manualOverride: "websipphone.manualOverride"
 } as const;
 
 const ALL_KEYS = Object.values(KEYS);
@@ -21,7 +22,8 @@ export async function loadConfig(): Promise<WebSipPhoneConfig> {
     account: (items[KEYS.account] as WebSipPhoneConfig["account"] | undefined) ?? DEFAULT_CONFIG.account,
     allowSites: (items[KEYS.allowSites] as WebSipPhoneConfig["allowSites"] | undefined) ?? DEFAULT_CONFIG.allowSites,
     turn: (items[KEYS.turn] as WebSipPhoneConfig["turn"] | undefined) ?? DEFAULT_CONFIG.turn,
-    dotPosition: (items[KEYS.dotPosition] as WebSipPhoneConfig["dotPosition"] | undefined) ?? DEFAULT_CONFIG.dotPosition
+    dotPosition: (items[KEYS.dotPosition] as WebSipPhoneConfig["dotPosition"] | undefined) ?? DEFAULT_CONFIG.dotPosition,
+    manualOverride: (items[KEYS.manualOverride] as boolean | undefined) ?? DEFAULT_CONFIG.manualOverride
   };
 }
 
@@ -31,13 +33,14 @@ export async function saveConfig(patch: Partial<WebSipPhoneConfig>): Promise<Web
   if ("allowSites" in patch) toWrite[KEYS.allowSites] = patch.allowSites;
   if ("turn" in patch) toWrite[KEYS.turn] = patch.turn;
   if ("dotPosition" in patch) toWrite[KEYS.dotPosition] = patch.dotPosition;
+  if ("manualOverride" in patch) toWrite[KEYS.manualOverride] = patch.manualOverride;
   if (Object.keys(toWrite).length > 0) {
     await chrome.storage.local.set(toWrite);
   }
   return loadConfig();
 }
 
-/** Sign out: clearing the account also clears TURN credentials (design.md §19). */
+/** Sign out: clearing the account also clears TURN credentials (design.md §19) and any manual override. */
 export async function clearAccount(): Promise<WebSipPhoneConfig> {
-  return saveConfig({ account: null, turn: null });
+  return saveConfig({ account: null, turn: null, manualOverride: false });
 }
