@@ -50,6 +50,38 @@ local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, v
   worker's init sequence. This has not caused a failure in testing, but it is a known deviation
   from the strict MV3 recommendation and is worth specifically watching for missed events (e.g. a
   tab-close or message arriving right as the worker wakes) during manual/live acceptance testing.
+- **`options.html` is web-accessible to every `http(s)` origin.** `web_accessible_resources` matches
+  `https://*/*` and `http://*/*` (the latter so private-network HTTP Allow Sites can use the deep
+  links). Any page that knows the extension id can therefore navigate to `options.html`; the page
+  refuses to run inside a frame, and the only privileged action it offers is Chrome's own
+  per-site permission prompt, which the user still has to accept.
+- **Provisioned credentials do not survive a browser restart.** The `a1Hash` a host page provisions
+  lives only in `chrome.storage.session`, deliberately — it is never written to
+  `chrome.storage.local`. After a restart the extension comes up with the manual account (or
+  unregistered), and the page must provision again after its `hello`.
+- **Removing a site from Allow Sites revokes any credential provisioned from it.** A provisioned
+  credential is accepted only because its origin is an Allow Site, so taking that site off the list
+  drops the credential at once; the extension falls back to the manual account, or goes
+  unregistered if there is none. A call already in progress is not cut off — teardown still waits
+  for the call to end, per the runtime lifetime rule — but the page must provision again (after the
+  site is added back) to register with that credential a second time.
+- **A provisioned credential's `expiresAt` may be observed late.** Expiry is enforced by a service
+  worker timer plus a check on every state evaluation, but MV3 does not guarantee timers: the
+  service worker can be terminated before the timer fires, and the timer dies with it. Expiry is
+  therefore guaranteed only at the next state evaluation — a status report, a tab change, or an
+  incoming message — so the credential is dropped at the first evaluation at or after `expiresAt`,
+  which can lag the stated moment by up to one evaluation.
+- **A manual override is visible to the host page only through `state.provisionStatus`.** While
+  the user has overridden provisioning by saving a manual account in Options, `credentialSource`
+  reports `"MANUAL"` exactly as it does for a plain typed-in account; the two are told apart only by
+  `provisionStatus: "OVERRIDDEN"`, a field added after the first v1 build. A page written against the
+  original field set cannot see the override and, if it re-provisions on `MANUAL`, changes nothing
+  (the credential is validated, accepted and held; Options can hand the registration back with
+  *Clear override*) but does re-mint a server-side session each time.
+- **`state.registration` cannot distinguish a WSS drop from being unregistered.** The page-facing
+  registration value is derived from the extension's own link status, which merges SIP registration
+  and WebSocket (they cannot disagree in SIP over WebSocket). A transport reconnect therefore shows
+  `UNREGISTERED`/`REGISTERING` with `error: "WSS_LOST"` rather than a state of its own.
 - **The ringtone is one fixed bundled sound at the system volume.** `static/sounds/ringtone.wav` is
   the only ringtone; there is no picker and no volume control (design.md §9.4, §17). The sound can be
   changed only by editing the constants in `scripts/gen-ringtone.mjs`, regenerating the asset with

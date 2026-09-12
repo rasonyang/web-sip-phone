@@ -11,6 +11,7 @@ export const CONFIG: RuntimeConfig = {
   serverUrl: "wss://voice.example.com/",
   username: "1001",
   password: "pw",
+  credentialSource: "manual",
   iceServers: []
 };
 
@@ -25,6 +26,7 @@ export function testUaFactory(): UaFactory {
         transportOptions: { server: config.serverUrl },
         authorizationUsername: config.username,
         authorizationPassword: config.password,
+        authorizationHa1: config.a1Hash,
         sessionDescriptionHandlerFactory: fakeSdhFactory,
         logBuiltinEnabled: false,
         delegate: {

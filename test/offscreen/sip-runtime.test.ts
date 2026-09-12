@@ -13,11 +13,33 @@ import {
 vi.mock("../../src/offscreen/media.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   probeMicPermission: () => Promise.resolve(micState),
-  readMicLabel: () => Promise.resolve(micLabel)
+  readMicLabel: () => Promise.resolve(micLabel),
+  acquireMicOnce: () => {
+    micAcquireCalls++;
+    return Promise.resolve(micAcquireOk);
+  },
+  watchMicPermission: (onGranted: () => void) => {
+    micGrantHandler = onGranted;
+    micWatchers++;
+    return () => {
+      micWatchers--;
+      if (micGrantHandler === onGranted) {
+        micGrantHandler = null;
+      }
+    };
+  }
 }));
 
 let micState: "granted" | "blocked" = "granted";
 let micLabel: string | null = "Studio Mic";
+/** Result of the real capture the provisioned source uses in place of the permission probe. */
+let micAcquireOk = true;
+/** How often that real capture was attempted; a mic-gate loop shows up here as growth. */
+let micAcquireCalls = 0;
+/** The callback watchMicPermission was handed, so a test can play "the user granted it". */
+let micGrantHandler: (() => void) | null = null;
+/** Live watcher count: proves a stop() unsubscribes rather than leaking a listener. */
+let micWatchers = 0;
 /** Response handed to the register request delegate; drives expiry and reason-phrase parsing. */
 let registerResponse: ResponseLike | undefined;
 
@@ -26,6 +48,7 @@ const CONFIG: RuntimeConfig = {
   serverUrl: "wss://voice.example.com/",
   username: "1001",
   password: "pw",
+  credentialSource: "manual",
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
 
@@ -112,11 +135,16 @@ let registerer: FakeRegisterer;
 let statuses: OffscreenStatus[];
 /** Stand-in for the offscreen mic meter's current level. */
 let micLevel_: number | null = null;
+/** The config the UA factory was last built with, and how often it was built at all. */
+let lastCfg: RuntimeConfig | null = null;
+let factoryCalls = 0;
 
 function makeRuntime() {
   statuses = [];
   const factory: UaFactory = {
-    create: (_cfg, delegate) => {
+    create: (cfg, delegate) => {
+      lastCfg = cfg;
+      factoryCalls++;
       ua = new FakeUa(delegate);
       registerer = new FakeRegisterer();
       return { ua, registerer };
@@ -141,6 +169,12 @@ beforeEach(() => {
   registerResponse = undefined;
   rejectRegister = false;
   manualRegister = false;
+  micAcquireOk = true;
+  micAcquireCalls = 0;
+  micGrantHandler = null;
+  micWatchers = 0;
+  lastCfg = null;
+  factoryCalls = 0;
   // Zero jitter by default so the timing-sensitive tests stay deterministic; the jitter
   // tests override this per-case.
   vi.spyOn(Math, "random").mockReturnValue(0);
@@ -744,5 +778,271 @@ describe("status payload for the panel", () => {
     expect(last().reconnect).toBeNull();
     expect(last().lastError).toBeNull();
     expect(last().micLevel).toBeNull();
+  });
+});
+
+describe("provisioned credential source", () => {
+  const PROVISIONED: RuntimeConfig = {
+    sipUri: "sip:2001@voice.example.com",
+    serverUrl: "wss://voice.example.com:7443/ws",
+    username: "2001",
+    a1Hash: "0123456789abcdef0123456789abcdef",
+    credentialSource: "provisioned",
+    iceServers: []
+  };
+
+  /** Drain the microtask queue; retryAfterMicGrant starts the runtime without returning a promise. */
+  async function settle(ticks = 40) {
+    for (let i = 0; i < ticks; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  it("carries the a1Hash, and no password, into the UA", async () => {
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    expect(last().phase).toBe("ready");
+    expect(lastCfg!.a1Hash).toBe(PROVISIONED.a1Hash);
+    expect(lastCfg!.password).toBeUndefined();
+  });
+
+  it("verifies the microphone with a real capture, not the permission probe", async () => {
+    // Permission says granted, the device is unusable: only an actual capture can tell.
+    micState = "granted";
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    expect(factoryCalls).toBe(0); // no UA, no REGISTER: nothing reaches the server
+    expect(last().phase).toBe("stopped");
+    expect(last().errors).toContain("MICROPHONE_BLOCKED");
+    expect(last().link.microphone).toBe("blocked");
+    expect(last().lastError).toEqual({ code: "MICROPHONE_BLOCKED", reasonPhrase: "microphone unavailable" });
+  });
+
+  it("registers by itself once the microphone grant arrives", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    expect(micGrantHandler).toBeTypeOf("function");
+
+    micAcquireOk = true;
+    micGrantHandler!();
+    await settle();
+    expect(factoryCalls).toBe(1);
+    expect(last().phase).toBe("ready");
+    expect(micWatchers).toBe(0); // the watcher is dropped once it has done its job
+  });
+
+  it("a passing microphone test unblocks a gated provisioned start", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    expect(factoryCalls).toBe(0);
+
+    micAcquireOk = true;
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop: () => {} }] }) }
+    });
+    try {
+      const result = await rt.testMic();
+      expect(result.ok).toBe(true);
+      await settle();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(factoryCalls).toBe(1);
+    expect(last().phase).toBe("ready");
+  });
+
+  it("a stop while mic-gated retires the credential: a later grant starts nothing", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    const handler = micGrantHandler!;
+    await rt.stop();
+    expect(micWatchers).toBe(0);
+
+    micAcquireOk = true;
+    handler(); // the grant lands after the worker has already given up on this credential
+    await settle();
+    expect(factoryCalls).toBe(0);
+    expect(last().phase).toBe("stopped");
+  });
+
+  it("the manual source keeps using the permission probe", async () => {
+    // A failing capture is irrelevant to the manual path...
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(last().phase).toBe("ready");
+    expect(micGrantHandler).toBeNull(); // ...and no watcher is ever armed for it
+
+    // ...while the probe still gates it.
+    micState = "blocked";
+    micAcquireOk = true;
+    const rt2 = makeRuntime();
+    await rt2.start(CONFIG);
+    expect(last().phase).toBe("stopped");
+    expect(last().errors).toContain("MICROPHONE_BLOCKED");
+    expect(last().lastError?.reasonPhrase).toBe("permission not granted");
+  });
+
+  // Regression for the mic-gate hot loop. The guard lives in media.ts's watchMicPermission
+  // (which now fires only on a `change` event, never on the initial state read), not in the
+  // runtime: the runtime has no re-entrancy guard of its own, so a watcher that fired on
+  // subscription would recurse start() → acquire → watch → start() without bound. What the
+  // runtime *does* guarantee, and what these assert, is that a failed start costs exactly one
+  // capture attempt and leaves exactly one armed watcher — no re-subscription storm.
+  it("a failed mic gate costs one capture attempt and arms exactly one watcher", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    await settle();
+    expect(micAcquireCalls).toBe(1);
+    expect(micWatchers).toBe(1);
+    expect(factoryCalls).toBe(0);
+  });
+
+  it("re-entering the gate replaces the watcher instead of stacking watchers", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    await rt.start({ ...PROVISIONED, username: "2002" });
+    await rt.start({ ...PROVISIONED, username: "2003" });
+    await settle();
+    expect(micAcquireCalls).toBe(3); // one per start, and not one more
+    expect(micWatchers).toBe(1); // the previous watcher is unsubscribed each time
+    expect(factoryCalls).toBe(0);
+  });
+
+  it("retry() re-runs the microphone gate for a start parked on it", async () => {
+    // The panel's Retry button and the content script's visibility nudge both land here. A
+    // device that was merely busy never produces a permission `change` event, so this is the
+    // only way back for a provisioned start gated on it.
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    expect(factoryCalls).toBe(0);
+
+    micAcquireOk = true;
+    rt.retry();
+    await settle();
+    expect(micAcquireCalls).toBe(2);
+    expect(factoryCalls).toBe(1);
+    expect(lastCfg!.username).toBe(PROVISIONED.username);
+    expect(last().phase).toBe("ready");
+    expect(micWatchers).toBe(0); // gate cleared: nothing left to listen for
+  });
+
+  it("retry() with the microphone still unusable leaves the start gated and armed", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    rt.retry();
+    await settle();
+    expect(micAcquireCalls).toBe(2);
+    expect(factoryCalls).toBe(0);
+    expect(last().phase).toBe("stopped");
+    expect(last().errors).toContain("MICROPHONE_BLOCKED");
+    expect(micWatchers).toBe(1); // still armed for a genuine permission grant
+    expect(micGrantHandler).toBeTypeOf("function");
+  });
+
+  it("retry() after a stop stays dead: the credential was retired", async () => {
+    micAcquireOk = false;
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    await rt.stop();
+    micAcquireOk = true;
+    rt.retry();
+    await settle();
+    expect(micAcquireCalls).toBe(1); // no second capture: there is no held config to retry
+    expect(factoryCalls).toBe(0);
+  });
+
+  it("never reports the a1Hash to the worker", async () => {
+    const rt = makeRuntime();
+    await rt.start(PROVISIONED);
+    await rt.stop();
+    expect(JSON.stringify(statuses)).not.toContain(PROVISIONED.a1Hash);
+  });
+});
+
+describe("a UA the factory refuses to build", () => {
+  const PROVISIONED: RuntimeConfig = {
+    sipUri: "sip:2001@voice.example.com",
+    serverUrl: "wss://voice.example.com:7443/ws",
+    username: "2001",
+    a1Hash: "0123456789abcdef0123456789abcdef",
+    credentialSource: "provisioned",
+    iceServers: []
+  };
+
+  async function settle(ticks = 40) {
+    for (let i = 0; i < ticks; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  /** A factory that rejects the config outright — a SIP URI or transport URL SIP.js won't take. */
+  function makeThrowingRuntime(): SipRuntime {
+    statuses = [];
+    const factory: UaFactory = {
+      create: () => {
+        factoryCalls++;
+        throw new Error("bad sip uri");
+      }
+    };
+    return new SipRuntime({
+      factory,
+      audio: {} as HTMLAudioElement,
+      ringtone: { start: () => {}, stop: () => {} },
+      onStatus: (s) => statuses.push(s),
+      micLevel: () => micLevel_
+    });
+  }
+
+  it("stops with REGISTRATION_FAILED instead of throwing out of start()", async () => {
+    const rt = makeThrowingRuntime();
+    await expect(rt.start(CONFIG)).resolves.toBeUndefined();
+    expect(last().phase).toBe("stopped");
+    expect(last().errors).toContain("REGISTRATION_FAILED");
+    expect(last().lastError?.reasonPhrase).toContain("bad sip uri");
+    expect(last().link.registration).toBe("down");
+  });
+
+  it("does not wedge `running`: a later start is still attempted", async () => {
+    const rt = makeThrowingRuntime();
+    await rt.start(CONFIG);
+    expect(factoryCalls).toBe(1);
+    await rt.start(CONFIG);
+    // A runtime left believing it was running would treat this as a redundant start and
+    // report instead of trying — the wedge this guards against.
+    expect(factoryCalls).toBe(2);
+  });
+
+  it("reports a mic-gated restart that throws rather than leaving it unhandled", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    // Reached through globalThis: this suite's tsconfig carries no node types.
+    const proc = (globalThis as { process?: { on(e: string, cb: (r: unknown) => void): void; off(e: string, cb: (r: unknown) => void): void } }).process;
+    proc?.on("unhandledRejection", onUnhandled);
+    try {
+      micAcquireOk = false;
+      const rt = makeThrowingRuntime();
+      await rt.start(PROVISIONED);
+      expect(factoryCalls).toBe(0); // gated on the microphone, no UA attempted yet
+
+      micAcquireOk = true;
+      micGrantHandler!(); // the grant lands; retryAfterMicGrant starts with nobody awaiting it
+      await settle();
+      expect(factoryCalls).toBe(1);
+      expect(last().phase).toBe("stopped");
+      expect(last().errors).toContain("REGISTRATION_FAILED");
+    } finally {
+      proc?.off("unhandledRejection", onUnhandled);
+    }
+    await settle();
+    expect(unhandled).toEqual([]);
   });
 });

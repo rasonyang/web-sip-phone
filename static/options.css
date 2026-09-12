@@ -23,9 +23,48 @@ section p { font-size: 13px; line-height: 1.5; }
 .status.error { color: #b3261e; }
 .error { font-size: 12px; color: #b3261e; min-height: 1em; }
 .warning { font-size: 13px; color: #9a6700; margin: 4px 0 0; line-height: 1.5; }
+.banner { font-size: 12px; color: #1a3f7a; background: #eaf1fb; border: 1px solid #c3d8f5; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+#site-allow-deeplink { margin: 10px 0 2px; padding: 7px 14px; border: 1px solid #1a56b0; background: #1a56b0; color: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .site-add { display: flex; gap: 8px; }
 .site-add input { flex: 1; padding: 7px 9px; border: 1px solid #ccc; border-radius: 6px; }
 #site-list { list-style: none; padding: 0; }
 #site-list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee; font-size: 13px; }
 #site-list button { border: 1px solid #ccc; background: #fff; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
 .check input { margin-right: 6px; }
+
+/* ---- Account section: provisioning banner + manual-credential disclosure ----
+   shadcn/ui neutral tokens, scoped to these elements only; the rest of the form is untouched. */
+:root {
+  --n-bg: #fafafa;
+  --n-card: #ffffff;
+  --n-border: #e5e5e5;
+  --n-fg: #171717;
+  --n-muted: #737373;
+  --n-warn-bg: #fffbeb;
+  --n-warn-border: #fde68a;
+  --n-warn-fg: #92400e;
+  --n-radius: 8px;
+}
+#acc-provisioned.banner { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--n-fg); background: var(--n-card); border: 1px solid var(--n-border); border-radius: var(--n-radius); padding: 10px 12px; margin: 10px 0; }
+#acc-provisioned.banner.warning { background: var(--n-warn-bg); border-color: var(--n-warn-border); color: var(--n-warn-fg); }
+#acc-provisioned .banner-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+#acc-provisioned .banner-text { line-height: 1.5; }
+.readonly-line { font-size: 11px; color: var(--n-muted); line-height: 1.5; }
+#acc-provisioned.banner.warning .readonly-line { color: var(--n-warn-fg); opacity: 0.85; }
+#acc-provisioned > svg { flex: none; margin-top: 1px; }
+#acc-resync { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 5px 10px; font-size: 12px; color: var(--n-fg); background: var(--n-card); border: 1px solid var(--n-border); border-radius: 6px; cursor: pointer; }
+#acc-resync:hover { background: var(--n-bg); }
+#acc-manual { border: 1px solid var(--n-border); border-radius: var(--n-radius); background: var(--n-card); margin: 10px 0; font-size: 13px; color: var(--n-fg); }
+#acc-manual.warning { border-color: var(--n-warn-border); background: var(--n-warn-bg); color: var(--n-warn-fg); }
+#acc-manual > summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; font-size: 13px; }
+#acc-manual > summary::-webkit-details-marker { display: none; }
+#acc-manual > summary .chev { flex: none; transition: transform 0.15s ease; }
+#acc-manual[open] > summary .chev { transform: rotate(90deg); }
+#acc-manual .warn-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--n-warn-fg); }
+#acc-manual-body { padding: 0 12px; }
+#acc-manual-body label { font-size: 13px; }
+#acc-manual-actions { margin: 0; padding: 0 12px 12px; }
+#acc-manual-actions:empty { padding: 0; }
+#acc-clear-override { padding: 6px 12px; font-size: 12px; color: var(--n-fg); background: var(--n-card); border: 1px solid var(--n-border); border-radius: 6px; cursor: pointer; }
+#acc-clear-override:hover { background: var(--n-bg); }
+.override-note { font-size: 12px; color: var(--n-muted); line-height: 1.5; margin: 10px 0 0; }

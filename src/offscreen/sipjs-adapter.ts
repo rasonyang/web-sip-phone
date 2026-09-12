@@ -15,6 +15,7 @@ export const realUaFactory: UaFactory = {
       transportOptions: { server: config.serverUrl, keepAliveInterval: 20 },
       authorizationUsername: config.username,
       authorizationPassword: config.password,
+      authorizationHa1: config.a1Hash,
       sessionDescriptionHandlerFactoryOptions: {
         peerConnectionConfiguration: { iceServers: config.iceServers },
         // SIP.js defaults to 5000ms, and it waits out the full timeout whenever any candidate

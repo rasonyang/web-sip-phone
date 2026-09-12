@@ -238,6 +238,60 @@ Saving the configuration must not trigger registration immediately.
 
 Registration is allowed only when at least one Allow Site tab exists.
 
+### Account section states
+
+The Account section has two credential sources. **Manual** credentials are typed into Options and
+stored in `chrome.storage.local`. **Provisioned** credentials are pushed by an Allow Site page over
+the host-page provisioning protocol, held in `chrome.storage.session` only, never persisted beyond
+the browser session, and dropped when `expiresAt` passes. Which source is *applied* follows the
+precedence rules below; what is *held* is always shown.
+
+| State | Condition | Banner | Credential inputs | Always visible |
+|---|---|---|---|---|
+| Manual only | no provisioned credential held | none | Server / Account / Password + Save rendered directly (today's layout) | registration status line; Sign Out / Clear Account |
+| Provisioned, active | credential held, `manualOverride` false | "Provisioned by &lt;origin&gt; · account &lt;account&gt; · last sync &lt;time&gt;" with a **Re-sync** action | NOT rendered (no Server/Account/Password inputs, no Save, no masked password field exists in the DOM); a collapsed disclosure "Configure a SIP account manually" renders them only when opened | registration status line; Sign Out / Clear Account; the disclosure |
+| Provisioned, overridden | credential held, `manualOverride` true | "Provisioning disabled by manual account" (warning); held provisioned account/realm/origin shown read-only next to it | disclosure expanded by default with the manual form + Save + **Clear override** | same |
+
+#### Disclosure auto-expand (warning)
+
+The disclosure opens by default and is styled as a warning when:
+
+* Provisioning fault `NOT_RECEIVED`: an Allow Site page said `hello`, or the user pressed Re-sync,
+  and no valid provision arrived within the grace window (10 s).
+* Provisioning fault `INVALID`: a provision arrived without a usable account/realm, or otherwise
+  failed validation.
+* Registration with the provisioned credential failed (`REGISTRATION_FAILED`: 401/403, or no
+  response).
+* `manualOverride` is set.
+
+The disclosure collapses only credential *inputs*. The registration status line and the four
+connection-level faults — registration failed, WSS lost, microphone unavailable, media failed —
+stay at the top level and are never hidden by it.
+
+#### Precedence
+
+* A pre-existing manual account — typed before any provisioning, for example during development —
+  does **not** block provisioning. A provisioned credential replaces the manual registration; the
+  manual values stay stored, unapplied.
+* Saving a manual account while a provisioned credential is held sets `manualOverride`. From then on
+  the manual account is applied and the held provisioned credential is displayed read-only and not
+  applied. Options shows a one-line notice at save time that this establishes an override.
+* Clear override unsets `manualOverride`; the manual account stays stored and the provisioned
+  credential is applied again.
+* Sign Out / Clear Account clears the manual account, TURN, `manualOverride`, **and** the held
+  provisioned credential. The extension unregisters until a page provisions again.
+* Re-sync re-broadcasts the current state to every Allow Site tab so the host page can decide to
+  provision again, and restarts the grace window. It does not pull anything itself.
+* Provisioned values are never written into an editable input: they are shown read-only or not at
+  all.
+
+#### Presentation
+
+The banner and the disclosure adopt the shadcn/ui neutral tokens already required for the in-page
+widget (§14.1) and use lucide-style inline SVG — chevron-right / chevron-down for the disclosure,
+triangle-alert for the warning variant, refresh-cw on Re-sync. The rest of the Options form keeps
+its existing styling.
+
 ## 5.2 Allow Sites
 
 Allow Sites use exact hostname matching.
@@ -1204,6 +1258,8 @@ Requirements:
 * Logs may contain the Call-ID, state, timestamps, and masked numbers.
 * Clearing the account also clears both the SIP and TURN credentials.
 * The Chrome Web Store package must not hard-code customer accounts, passwords, or server configuration.
+* Provisioned credentials carry `a1Hash = md5(account:realm:password)`, never a plaintext password; they live in `chrome.storage.session` only and are never written to `chrome.storage.local`, the DOM, diagnostics, or any page-facing message.
+* `manualOverride` is a boolean in `chrome.storage.local`; it is set only by an explicit save while provisioned, and cleared by Clear override / Sign Out.
 
 ---
 
@@ -1221,6 +1277,13 @@ The following must not be implemented:
 * Web pages triggering Answer, Hold, or Hangup
 
 The Content Script receives only masked display state.
+
+One page-to-extension channel is sanctioned: the host-page provisioning protocol (README,
+"Host-page provisioning"). It is a same-window, same-origin `window.postMessage` exchange —
+`hello` / `provision` / `deprovision` inbound, `hello` / `state` outbound — carrying state only,
+never credentials, and no call control in either direction. "Dialing via `window.postMessage`" and
+"Web pages reading the account configuration" remain prohibited: the page learns only the
+registered account and realm and the status enums.
 
 ---
 
@@ -1347,6 +1410,35 @@ Using a mock SIP transport or a controllable SIP test environment, cover:
 13. ICE failure.
 14. Subsequent calls working after TURN is configured.
 15. Multi-tab state synchronization.
+
+### Account section (Options) acceptance
+
+Automated acceptance for the Account section:
+
+* Manual only: credential inputs are rendered, no banner is present, no disclosure is present.
+* Provisioned active: the banner text includes the origin, the account and the last sync time;
+  Re-sync is present; `#acc-server`, `#acc-username`, `#acc-password` and `#acc-save` are absent
+  from the DOM; the disclosure is present and collapsed; the status line and Sign Out are present.
+* Opening the disclosure renders the manual form; saving a complete manual account writes
+  `websipphone.account`, sets `websipphone.manualOverride = true`, shows the override notice, and
+  sends `config/changed`.
+* Provisioned overridden: the banner reads "Provisioning disabled by manual account", the held
+  provisioned values are shown read-only, the disclosure is expanded, and Clear override is
+  present; Clear override writes `manualOverride = false` and sends `config/changed`.
+* The disclosure auto-expands with the warning style for each of: `provisionFault = NOT_RECEIVED`;
+  `provisionFault = INVALID`; `credentialSource = PROVISIONED` with `error = REGISTRATION_FAILED`;
+  `manualOverride = true`.
+* Collapsing the disclosure never hides the registration status line or any of the four
+  connection-level faults.
+* Provisioned values never appear as the `value` of an editable input.
+* Service worker: `manualOverride` true with a provision held makes `runtime/start` use the manual
+  config, and state reports `credentialSource MANUAL`, `provisionStatus OVERRIDDEN`; clearing the
+  flag swaps to the provisioned config; a pre-existing manual account without the flag is overridden
+  by an incoming provision; `page/hello` with no provision within 10 s yields
+  `provisionFault NOT_RECEIVED`; an invalid provision yields `INVALID`; an accepted provision clears
+  the fault and sets `provisionLastSyncAt`; `ui/resync` re-broadcasts state to every Allow Site tab
+  and restarts the grace window; Sign Out (account cleared + `config/changed`) drops the held
+  provision.
 
 ## 22.3 FreeSWITCH Live Acceptance
 

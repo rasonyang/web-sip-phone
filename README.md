@@ -49,7 +49,8 @@ originations, and `uuid_phone_event <uuid> talk|hold` for remote answer/hold/res
   `ws://192.168.1.10:5066/`. The SIP domain is the hostname of whatever is entered, so the SIP URI
   here is `sip:1001@voice.example.com`. Plain `ws://` leaves SIP signaling unencrypted (media is
   still DTLS-SRTP, but its fingerprints travel in cleartext SDP) and is accepted only for
-  private-network and local addresses; see docs/FREESWITCH.md §1.
+  private-network and local addresses; see docs/FREESWITCH.md §1. Filling this in is optional when
+  an Allow Site page supplies the credential itself — see [Host-page provisioning](#host-page-provisioning).
 - **Allow Sites**: exact hostnames, one per entry — no wildcards, no subdomain inheritance, and no
   scheme, port or path in the box. Ports never take part in matching, so one entry covers every port
   on that host. HTTPS only, except private-network addresses (`localhost` and any `.localhost` name,
@@ -89,6 +90,123 @@ Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.4
   extension version are always there.
 - **Copy diagnostics** puts the version, account, every signal state, the last error and the
   relevant timestamps on the clipboard. Credentials are never included.
+
+## Host-page provisioning
+
+An Allow Site page can hand Web SIP Phone a SIP credential instead of the user typing one into
+Options. The page pushes a pre-hashed credential in; the extension answers with registration state
+only.
+
+**Presence marker.** On injection into an Allow Site page the content script sets
+`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.4"`),
+synchronously, before the page's own scripts run. It is set only on Allow Site pages and only in
+the top frame, so it is the page's first-pass test for "the extension is installed *and* this site
+is allowed". It is a hint, not a guarantee: a content script injected earlier keeps running after
+the user removes the site from Allow Sites, and the marker is removed only once the extension
+declines a `hello` (at which point the bridge stops answering entirely). Treat the marker as the
+signal to say `hello`, and the `hello` reply — followed by a `state` message — as the confirmation.
+
+**Transport.** `window.postMessage` on the page's own window — no `externally_connectable`, no
+custom events. The content script accepts a message only when `event.source === window` and
+`event.origin === location.origin`, and the service worker independently re-checks the sending
+tab's URL against Allow Sites before acting on it. Every message in both directions carries
+`source` and `protocolVersion: 1`.
+
+**Page → extension** (`source: "aicc"`):
+
+| `type` | Fields |
+| --- | --- |
+| `hello` | `nonce` |
+| `provision` | `nonce`, `sipDomain`, `wssUrl`, `account`, `a1Hash`, `expiresAt` (RFC 3339 date-time string; epoch ms also accepted) — flat on the message, not nested |
+| `deprovision` | — |
+
+**Extension → page** (`source: "web-sip-phone"`):
+
+| `type` | Fields |
+| --- | --- |
+| `hello` | `nonce` (echoed), `extensionVersion`, `extensionId`, `protocolVersion` |
+| `state` | `registration`, `account`, `sipDomain`, `credentialSource`, `provisionStatus`, `microphone`, `error` |
+
+`registration` is `UNREGISTERED | REGISTERING | REGISTERED | FAILED`; `credentialSource` is
+`NONE | MANUAL | PROVISIONED`; `provisionStatus` is `NONE | ACTIVE | OVERRIDDEN` (what the extension
+*holds*: `OVERRIDDEN` means a provisioned credential is held but the user's manual account is applied,
+and a page must not re-provision on it); `microphone` is `UNKNOWN | GRANTED | DENIED`; `error` is
+`null | REGISTRATION_FAILED | WSS_LOST | MIC_UNAVAILABLE | MEDIA_FAILED`. A `state` message is sent
+on every change and once immediately after the `hello` reply. The content script also posts the
+current state unsolicited as soon as it has one (typically before the page sends `hello`), so a
+page may treat any `state` it sees as authoritative. It never contains `a1Hash`.
+
+**Precedence.** A provisioned credential wins by default: it replaces a manual registration for as
+long as it is held, and a manual account that merely predates the provision never blocks it. It is
+cleared on `deprovision`, when `expiresAt` passes, or when the last Allow Site tab closes — and the
+extension then falls back to the manual account if one is configured, or unregisters if not.
+
+The one exception is a deliberate override. Saving a manual account in Options *while a credential
+is provisioned* sets an override: the manual account is applied and the provisioned credential is
+kept, validated and shown read-only, but not used. Options reports it as *Overridden* and offers
+**Clear override**, which hands the registration straight back to the held credential — a fresh
+`provision` from the page is not needed. Signing out clears the account, the override and the held
+credential together.
+
+While an override is active the page-facing `state` reports `credentialSource: "MANUAL"`, exactly
+as it would if the user had simply typed an account in. A host page must not treat that as a
+failed provision and re-provision in a loop: the credential *was* accepted, the user chose the
+other one. Provision on login and on identity transitions, not on every `state`.
+
+**Re-sync.** Options offers a *Re-sync* button, for the case where the extension is waiting on a
+credential the page never sent. It clears any provisioning fault and broadcasts fresh state to
+every Allow Site tab, which each page receives as an ordinary `state` message — there is no
+re-sync message in the protocol, and a page is free to respond by provisioning again or to ignore
+it. If nothing arrives within 10 seconds of a `hello` (or of a re-sync), Options reports *No
+credential received*; a `provision` that fails validation is reported as *Invalid credential*
+immediately. Both are diagnostics for the user, cleared by the next accepted `provision`.
+
+**Credential handling.** The page sends `a1Hash = md5(account:sipDomain:password)` — the SIP realm
+is `sipDomain` — never a plaintext password. The hash lives only in `chrome.storage.session`, never
+in `chrome.storage.local`, so it does not survive a browser restart. The content script forwards it
+and retains nothing. The SIP.js `UserAgent` is built with `authorizationHa1`, and `wssUrl` is used
+verbatim — the extension derives no transport address from `sipDomain`.
+
+**Microphone.** On provision the extension performs a real `getUserMedia` before registering. If it
+fails, the page sees `microphone: "DENIED"` and `error: "MIC_UNAVAILABLE"`, and no REGISTER is sent.
+Registration retries automatically once access is granted.
+
+**Deep links.** `chrome-extension://<extensionId>/options.html?site=<hostname>` opens Options on
+Allow Sites with a one-click *Allow &lt;hostname&gt;* button, and closes itself once granted if a page
+opened it. `chrome-extension://<extensionId>/options.html#microphone` opens Advanced at the
+microphone test. `extensionId` comes from the `hello` reply — do not hard-code it.
+
+```js
+if (!document.documentElement.dataset.webSipPhone) return; // not installed, or site not allowed
+const nonce = crypto.randomUUID();
+const send = (m) => window.postMessage({ source: "aicc", protocolVersion: 1, nonce, ...m }, location.origin);
+let sawHello = false;
+let sawState = false;
+window.addEventListener("message", (e) => {
+  if (e.source !== window || e.origin !== location.origin) return;
+  const m = e.data;
+  if (!m || m.source !== "web-sip-phone" || m.protocolVersion !== 1) return;
+  if (m.type === "hello" && m.nonce === nonce) {
+    sawHello = true;
+    send({ type: "provision", sipDomain: "voice.example.com", wssUrl: "wss://voice.example.com:7443/",
+           account: "2001", a1Hash: "<md5(2001:voice.example.com:secret)>", expiresAt: "2026-09-12T20:07:27Z" });
+  }
+  if (m.type === "state") {
+    sawState = true;
+    console.log(m.registration, m.credentialSource, m.microphone, m.error);
+  }
+});
+send({ type: "hello" });
+setTimeout(() => {
+  if (!sawHello) return;            // no reply at all: not installed, or not allowed here
+  if (!sawState) notAvailable();    // answered but no state: the extension is not usable yet
+}, 2000);
+```
+
+The `hello` reply is answered with a `state` message as soon as the extension has state to give.
+If a reply arrives but no `state` follows within a couple of seconds, the service worker was
+unreachable at that moment — treat the phone as not available and retry with a fresh `hello`
+rather than assuming a registration.
 
 ## Testing the ringtone
 Place a normal call to the account from another extension (no `Call-Info: …;answer-after=…`): the
@@ -161,8 +279,9 @@ plain regeneration reproduces the same bytes).
 
 ## Test coverage
 
-`npm test` runs 20 files / 247 tests: unit tests (header parsing, the call state machine, the
-ringtone player, Allow Site matching, multiple-call rejection, error priority) plus integration
+`npm test` runs 26 files / 457 tests: unit tests (header parsing, the call state machine, the
+ringtone player, Allow Site matching, multiple-call rejection, error priority, the page-facing
+provisioning bridge, and the microphone permission watcher and gate) plus integration
 tests against a mock SIP transport that exercise design.md §22.2 items 1–12 end to end (REGISTER
 success/failure, WSS disconnect/reconnect, Answer-After auto-answer, normal INVITE → RINGING with
 the ringtone starting, Talk while RINGING/DIALING/HELD, Hold while ACTIVE, CANCEL while RINGING,

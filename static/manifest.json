@@ -8,6 +8,7 @@
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": { "service_worker": "service-worker.js", "type": "module" },
   "options_page": "options.html",
+  "web_accessible_resources": [{ "resources": ["options.html"], "matches": ["https://*/*", "http://*/*"] }],
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
