@@ -47,7 +47,14 @@
 
       <section id="section-sites" hidden>
         <h2>Allow Sites</h2>
-        <p class="hint">Exact hostname match, HTTPS only. Subdomains are not included automatically. For local testing, localhost and 127.0.0.1 are also allowed over HTTP (any port).</p>
+        <p class="hint">
+          Exact hostname match: no wildcards, no scheme, port, or path in the box, and subdomains are not
+          included automatically. Ports never take part in matching, so one entry covers every port on that host
+          (<code>crm.example.com</code> matches <code>https://crm.example.com:8443/tickets</code>). HTTPS only,
+          except private-network addresses — <code>localhost</code> and any <code>.localhost</code> name,
+          <code>127.x</code>, <code>10.x</code>, <code>172.16.x</code>–<code>172.31.x</code>,
+          <code>192.168.x</code> — which are also allowed over HTTP.
+        </p>
         <div class="site-add">
           <input id="site-input" placeholder="crm.example.com" autocomplete="off" />
           <button id="site-add">Add</button>

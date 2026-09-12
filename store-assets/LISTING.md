@@ -74,7 +74,7 @@ health on the sites the user allows.
 | `offscreen` | Manifest V3 service workers cannot hold a WebRTC peer connection, a WebSocket or a media stream. The SIP.js user agent, the SIP-over-WSS link, the microphone and remote audio playback all live in a single offscreen document. |
 | `scripting` | Registers the content script dynamically for exactly the hostnames the user added to Allow Sites, so the status widget appears only there — not on every page. |
 | `tabs` | Detects whether an allowed-site tab is open. Registration is held only while one is; when the last one closes the extension unregisters. Only tab URLs are inspected, and only to match them against the user's own allow list. |
-| `optional_host_permissions` (`https://*/*`) | Requested at the moment the user adds a site in Settings, one hostname at a time via `chrome.permissions.request`, and revoked when the site is removed. Never requested at install time. Loopback (`localhost`, `127.0.0.1`) is included for local testing against a development SIP server. |
+| `optional_host_permissions` (`https://*/*`, `http://*/*`) | Requested at the moment the user adds a site in Settings, one hostname at a time via `chrome.permissions.request`, and revoked when the site is removed. Never requested at install time. HTTP is only ever requested for private-network addresses (`localhost` and any `.localhost` name, `127.x`, `10.x`, `172.16.x`-`172.31.x`, `192.168.x`) so a user can test against a development or on-premise SIP server; every public host is requested over HTTPS only. The broad `http://*/*` pattern is needed because Chrome match patterns cannot express an IP range. |
 
 ## Remote code
 
