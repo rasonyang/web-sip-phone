@@ -20,7 +20,7 @@
     <main>
       <section id="section-account">
         <h2>Account</h2>
-        <p class="hint">Enter the hostname only — no sip:, wss://, port, or path.</p>
+        <p class="hint">Domain is the hostname only — no sip:, scheme, port, or path. To reach the server on a different scheme, port, or path, use Server URL below.</p>
         <label>Domain <input id="acc-domain" placeholder="voice.example.com" autocomplete="off" /></label>
         <label>Account <input id="acc-username" placeholder="1001" autocomplete="off" /></label>
         <label>Password
@@ -29,6 +29,14 @@
             <button id="acc-pw-toggle" type="button" aria-label="Show password">👁</button>
           </span>
         </label>
+        <label>Server URL <input id="acc-server" placeholder="wss://voice.example.com/" autocomplete="off" /></label>
+        <p class="hint">
+          Optional, advanced. Leave it empty to use <code>wss://&lt;domain&gt;/</code>. Set it to reach the server
+          on a non-standard port or path, for example <code>wss://voice.example.com:7443/</code> or
+          <code>ws://192.168.1.10:5066/</code>. Warning: <code>ws://</code> is unencrypted — SIP signaling and your
+          credentials travel in the clear, and anyone on the network path can replace the DTLS fingerprint in the SDP
+          and listen to your call audio. Use it only on a network you trust.
+        </p>
         <p id="acc-status" class="status" role="status"></p>
         <div class="actions">
           <button id="acc-save">Save</button>

@@ -2,6 +2,12 @@ export interface AccountConfig {
   domain: string;
   username: string;
   password: string;
+  /**
+   * Optional full SIP transport URL, overriding the derived `wss://<domain>/`. Supports ws/wss,
+   * a non-standard port, and a path. Left unset for the common case; `domain` keeps its meaning
+   * (a bare hostname, used for the SIP URI and in the UI) either way.
+   */
+  serverUrl?: string;
 }
 
 export interface TurnConfig {
@@ -46,10 +52,10 @@ export function isAccountComplete(a: AccountConfig | null): a is AccountConfig {
   return a !== null && a.domain.length > 0 && a.username.length > 0 && a.password.length > 0;
 }
 
-export function deriveEndpoints(a: AccountConfig): { sipUri: string; wssUrl: string } {
+export function deriveEndpoints(a: AccountConfig): { sipUri: string; serverUrl: string } {
   return {
     sipUri: `sip:${a.username}@${a.domain}`,
-    wssUrl: `wss://${a.domain}/`
+    serverUrl: a.serverUrl?.trim() || `wss://${a.domain}/`
   };
 }
 

@@ -57,9 +57,9 @@ describe("service worker lifecycle", () => {
     await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
     const start = fake.sentRuntimeMessages.find(
       (m) => (m as { type?: string }).type === "runtime/start"
-    ) as { config: { sipUri: string; wssUrl: string } };
+    ) as { config: { sipUri: string; serverUrl: string } };
     expect(start.config.sipUri).toBe("sip:1001@voice.example.com");
-    expect(start.config.wssUrl).toBe("wss://voice.example.com/");
+    expect(start.config.serverUrl).toBe("wss://voice.example.com/");
   });
 
   it("only one runtime/start for multiple tabs", async () => {

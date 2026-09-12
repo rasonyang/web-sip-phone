@@ -38,14 +38,19 @@ the page's own softphone bar owns all call-facing UI. SIP support comes from a
 2. The options page opens on first install.
 
 ## FreeSWITCH prerequisites
-See docs/FREESWITCH.md: wss binding in the verto/sofia profile (`wss-binding`), TLS certs,
-`Call-Info <...>;answer-after=0` on agent-first originations, and `uuid_phone_event <uuid> talk|hold`
-for remote answer/hold/resume.
+See docs/FREESWITCH.md: a WebSocket binding in the verto/sofia profile — `wss-binding` plus TLS
+certs, or `ws-binding` on a trusted network — `Call-Info <...>;answer-after=0` on agent-first
+originations, and `uuid_phone_event <uuid> talk|hold` for remote answer/hold/resume.
 
 ## Configuration
-- **Account**: Domain (hostname only, e.g. `voice.example.com`), Account (e.g. `1001`), Password.
-  Derived automatically: SIP URI `sip:1001@voice.example.com`, WSS `wss://voice.example.com/`
-  (port 443, path `/`, WebSocket subprotocol `sip`).
+- **Account**: Domain (hostname only, e.g. `voice.example.com`), Account (e.g. `1001`), Password,
+  and an optional Server URL. The SIP URI is always derived as `sip:1001@voice.example.com`; the
+  WebSocket endpoint is derived as `wss://voice.example.com/` (port 443, path `/`, subprotocol
+  `sip`) while Server URL is empty. Filling Server URL replaces that derivation entirely and takes
+  any `ws://` or `wss://` URL — `wss://voice.example.com:7443/`, `ws://192.168.1.10:5066/` — so the
+  WebSocket host need not be the SIP domain. Plain `ws://` leaves SIP signaling unencrypted (media
+  is still DTLS-SRTP, but its fingerprints travel in cleartext SDP): trusted networks only, see
+  docs/FREESWITCH.md §1.
 - **Allow Sites**: exact hostnames, HTTPS only, one per entry. Adding a site triggers a Chrome
   per-site permission prompt; removing revokes it. Registration only happens while at least one
   Allow Site tab is open.
@@ -68,7 +73,7 @@ TURN       ⚠ Not configured
 Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.4
 ```
 
-- **Signaling** merges SIP registration and WebSocket — in SIP-over-WSS they cannot disagree —
+- **Signaling** merges SIP registration and WebSocket — in SIP over WebSocket they cannot disagree —
   and counts down the registration expiry the server granted. The `›` chevron reveals the four
   raw signals (SIP registration, WebSocket, Microphone, Media) plus TURN's full consequence.
 - **Microphone** names the device and shows a live input level, measured in the offscreen
@@ -97,8 +102,8 @@ hold (re-INVITE sendonly); `talk` again resumes. See docs/FREESWITCH.md for a fu
 ## Troubleshooting
 | Symptom | Check |
 | --- | --- |
-| Registration failed | The panel names the SIP reason (`403 Forbidden` → password, `404` → unknown extension); FreeSWITCH WSS reachable at `wss://<domain>/` |
-| Voice server unreachable | Network/WSS; `Retry now` in the panel; backoff continues automatically |
+| Registration failed | The panel names the SIP reason (`403 Forbidden` → password, `404` → unknown extension); FreeSWITCH's WebSocket binding reachable at the configured Server URL, or at `wss://<domain>/` when that field is empty |
+| Voice server unreachable | Network and WebSocket endpoint (scheme, port and path of Server URL must match the sofia `ws-binding`/`wss-binding`); `Retry now` in the panel; backoff continues automatically |
 | Microphone blocked | Options → Advanced → Test microphone (the panel's own test hands you there — only the Options page can raise Chrome's prompt), or chrome://settings/content/microphone |
 | Call audio failed | Configure TURN (Advanced); typical on symmetric NAT |
 | No dot on the page | Site listed exactly (no subdomain difference), HTTPS, permission granted |
@@ -113,8 +118,8 @@ Web SIP Phone runs four cooperating pieces, all in `src/`:
   WebRTC session; it only aggregates state broadcast by the offscreen document and relays it to
   every open Allow Site tab.
 - **Offscreen document** (`src/offscreen`) — the single global SIP.js `UserAgent`, the SIP over
-  WSS connection, REGISTER/unregister, the one allowed SIP session, microphone acquisition, remote
-  audio playback, the inbound ringtone, and the call state machine (`READY → DIALING/RINGING → ACTIVE ⇄ HELD → ENDED`)
+  WebSocket connection, REGISTER/unregister, the one allowed SIP session, microphone acquisition,
+  remote audio playback, the inbound ringtone, and the call state machine (`READY → DIALING/RINGING → ACTIVE ⇄ HELD → ENDED`)
   driven by INVITE, CANCEL, BYE, and BroadSoft `NOTIFY`/`Event: talk`/`Event: hold`. State changes
   are broadcast to the service worker; nothing here is rendered directly.
 - **Content script** (`src/content`) — injected only into top-level Allow Site pages (never
@@ -130,14 +135,14 @@ Web SIP Phone runs four cooperating pieces, all in `src/`:
 **Call states never render UI.** DIALING, RINGING, ACTIVE, HELD, and ENDED are internal-only: the
 content script is sent a single `busy` boolean, which tints the collapsed button, and nothing
 else — no numbers, no duration, no call controls. The panel only
-auto-expands for the four connection-level errors: registration failure, WSS loss, microphone
+auto-expands for the four connection-level errors: registration failure, WebSocket loss, microphone
 failure, and media failure.
 
 **Page reload never ends a call.** The SIP session, the `RTCPeerConnection`, the microphone and
 the remote audio all live in the offscreen document; a content script is only a view of them. The
 service worker keeps the runtime alive while `allowedTabCount > 0 OR activeCall`, and destroys it
-(unregister, close WSS, stop media, close the document) only when there is no Allow Site tab *and*
-no call in progress. So refreshing an Allow Site page during a call does not interrupt audio,
+(unregister, close the WebSocket, stop media, close the document) only when there is no Allow Site
+tab *and* no call in progress. So refreshing an Allow Site page during a call does not interrupt audio,
 change the SIP Call-ID, or produce a new INVITE — the reloaded page just asks for the current
 state and shows the call already in progress. There is no `beforeunload` prompt and no session
 resume: nothing is serialized or restored, the runtime simply outlives the page. See design.md
@@ -169,7 +174,7 @@ remaining §22.2 items are covered elsewhere rather than in the integration suit
   `test/background/service-worker.test.ts`, including the status-panel payload (identity,
   registration expiry, backoff progress, microphone device/level, fault reason).
 
-The design.md §22.3 FreeSWITCH live-acceptance items (real SIP over WSS, two-way audio, etc.)
+The design.md §22.3 FreeSWITCH live-acceptance items (real SIP over WebSocket, two-way audio, etc.)
 require a live FreeSWITCH environment and are tracked as a fillable checklist in
 docs/FREESWITCH.md, not run by the automated suite.
 

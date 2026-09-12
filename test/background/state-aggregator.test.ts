@@ -16,7 +16,7 @@ const base: OffscreenStatus = {
   lastError: null
 };
 
-const IDENTITY = { account: "1001", domain: "voice.example.com", turnConfigured: false };
+const IDENTITY = { account: "1001", domain: "voice.example.com", serverUrl: "wss://voice.example.com/", turnConfigured: false };
 
 describe("computeDisplayState", () => {
   it("UNCONFIGURED when account incomplete", () => {
@@ -77,6 +77,7 @@ describe("computeDisplayState", () => {
     expect(s.details).toEqual({
       account: "1001",
       domain: "voice.example.com",
+      serverUrl: "wss://voice.example.com/",
       turnConfigured: true,
       registrationExpiresAt: 1_770_000_600_000,
       reconnect: { attempt: 2, nextAttemptAt: 1_770_000_010_000 },
