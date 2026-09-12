@@ -6,14 +6,14 @@ changes, change it here in the same commit.
 
 - **Category:** Workflow & Planning
 - **Language:** English
-- **Version:** 1.0.4
+- **Version:** 1.0.5
 - **Privacy policy URL:** https://github.com/rasonyang/web-sip-phone/blob/main/PRIVACY.md
 - **Support URL:** https://github.com/rasonyang/web-sip-phone/issues
 
-## Short description (127 / 132 chars — mirrors `manifest.json`)
+## Short description (130 / 132 chars — mirrors `manifest.json`)
 
 ```
-Keeps a WebRTC SIP extension registered over WSS and shows a headset button with live connection status on the pages you allow.
+Keeps a WebRTC SIP extension registered over WS/WSS and shows a headset button with live connection status on the pages you allow.
 ```
 
 ## Detailed description
@@ -35,7 +35,8 @@ and its accessible label, and the panel repeats every signal as a check, warning
 cross shape.
 
 HOW IT WORKS
-• Registers a single SIP extension over secure WebSocket (WSS)
+• Registers a single SIP extension over secure WebSocket (WSS), or plain ws:// when the
+  server is a private-network address you are developing against
 • Auto-answers server-initiated calls (Call-Info answer-after)
 • Supports remote talk/hold control (BroadSoft Event: talk/hold)
 • Rings on a normal inbound call — one bundled ringtone, played by the extension itself
@@ -49,22 +50,28 @@ HOW IT WORKS
   clears; a fault is dismissed by fixing it, not by hiding it
 • Copy diagnostics puts the whole picture on your clipboard for a support ticket.
   Your SIP password is never included — it never leaves Settings
+• An allowed page can hand the extension its SIP credential, so a user signed in to your
+  own system never types one. The credential is pre-hashed by the page; the extension
+  answers with registration state only, never with call information. Save your own
+  credential in Settings and yours takes over until you clear it again
 
 Web SIP Phone is a connection indicator, not a softphone: your business page keeps
 full control of dialing, answering and call information. Call state never reaches the
-page — no numbers, no timers, no call controls. It only runs on the HTTPS sites you
-explicitly allow in Settings, and only while one of those tabs is open.
+page — no numbers, no timers, no call controls. It only runs on the sites you explicitly
+allow in Settings — HTTPS, or HTTP for a private-network address — and only while one of
+those tabs is open.
 
 REQUIREMENTS
-• A SIP server reachable over WSS (e.g. FreeSWITCH with wss-binding)
+• A SIP server reachable over WSS — or over ws:// if it is on your private network
+  (e.g. FreeSWITCH with wss-binding)
 • Microphone access, granted once from Settings → Advanced → Test microphone
 • Chrome 116 or newer
 ```
 
 ## Single purpose
 
-Maintain one SIP-over-WSS registration for the user's own extension and show its connection
-health on the sites the user allows.
+Maintain one SIP-over-WebSocket registration for the user's own extension and show its
+connection health on the sites the user allows.
 
 ## Permission justifications (review form)
 

@@ -73,7 +73,7 @@ Signaling  ✓ WSS · expires in 4:12                    ›
 Microphone ✓ MacBook Pro Microphone              ▁▃▅▇
 TURN       ⚠ Not configured
 ──────────────────────────────────────────────────────
-Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.4
+Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.5
 ```
 
 - **Signaling** merges SIP registration and WebSocket — in SIP over WebSocket they cannot disagree —
@@ -98,7 +98,7 @@ Options. The page pushes a pre-hashed credential in; the extension answers with 
 only.
 
 **Presence marker.** On injection into an Allow Site page the content script sets
-`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.4"`),
+`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.5"`),
 synchronously, before the page's own scripts run. It is set only on Allow Site pages and only in
 the top frame, so it is the page's first-pass test for "the extension is installed *and* this site
 is allowed". It is a hint, not a guarantee: a content script injected earlier keeps running after
