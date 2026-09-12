@@ -281,6 +281,16 @@ The Allow Sites page provides:
 * A list of configured sites
 * Remove
 
+Page copy (verbatim):
+
+* Body: "Enter the exact hostname of an HTTPS site. One entry covers every port and path on that
+  host; subdomains must be added separately."
+* Secondary hint below the input, small muted type: "Private-network hosts (localhost, 127.x, 10.x,
+  172.16–31.x, 192.168.x) are also accepted over HTTP."
+* The copy does not enumerate what is rejected (wildcards, scheme, port, path) and carries no example
+  domain; the placeholder is `crm.example.com` and validation reports the specific problem, e.g.
+  "Enter a hostname only — no https://, port, or path" when the input carries any of those.
+
 ## 5.3 Advanced
 
 Google's public STUN server is configured by default:

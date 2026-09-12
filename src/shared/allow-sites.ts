@@ -10,7 +10,7 @@
 
 const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 
-function parseIpv4(host: string): number[] | null {
+export function parseIpv4(host: string): number[] | null {
   const parts = host.split(".");
   if (parts.length !== 4) {
     return null;
@@ -74,4 +74,20 @@ export function urlMatchesAllowSite(url: string, sites: string[]): boolean {
 
 export function originPatterns(host: string): string[] {
   return isPrivateHost(host) ? [`http://${host}/*`, `https://${host}/*`] : [`https://${host}/*`];
+}
+
+/** Validation message for the Allow Sites input, naming what is wrong with it; null when it is a valid hostname. */
+export function allowSiteInputError(input: string): string | null {
+  if (normalizeHostname(input)) {
+    return null;
+  }
+  const text = input.trim();
+  if (!text) {
+    return "Enter a hostname.";
+  }
+  // A scheme, port or path all bring a ":" or "/"; a bare hostname has neither.
+  if (/[/:]/.test(text)) {
+    return "Enter a hostname only — no https://, port, or path";
+  }
+  return "Enter a valid hostname.";
 }

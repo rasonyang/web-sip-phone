@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrivateHost, normalizeHostname, originPatterns, urlMatchesAllowSite } from "../../src/shared/allow-sites.js";
+import { allowSiteInputError, isPrivateHost, normalizeHostname, originPatterns, urlMatchesAllowSite } from "../../src/shared/allow-sites.js";
 
 describe("normalizeHostname", () => {
   it("lowercases and trims", () => {
@@ -155,5 +155,22 @@ describe("private-network development exception", () => {
 
     expect(urlMatchesAllowSite("https://8.8.8.8/", sites)).toBe(true);
     expect(urlMatchesAllowSite("https://172.32.0.1/", sites)).toBe(true);
+  });
+});
+
+describe("allowSiteInputError", () => {
+  it("returns null for a valid hostname", () => {
+    expect(allowSiteInputError("crm.example.com")).toBeNull();
+    expect(allowSiteInputError("192.168.31.55:8080")).toBeNull();
+  });
+  it("names scheme, port and path as the problem", () => {
+    const msg = "Enter a hostname only — no https://, port, or path";
+    expect(allowSiteInputError("https://crm.example.com")).toBe(msg);
+    expect(allowSiteInputError("crm.example.com:8443")).toBe(msg);
+    expect(allowSiteInputError("crm.example.com/tickets")).toBe(msg);
+  });
+  it("asks for a hostname when empty and rejects other junk", () => {
+    expect(allowSiteInputError("   ")).toBe("Enter a hostname.");
+    expect(allowSiteInputError("*.example.com")).toBe("Enter a valid hostname.");
   });
 });

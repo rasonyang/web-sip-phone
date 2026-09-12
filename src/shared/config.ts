@@ -3,9 +3,10 @@ export interface AccountConfig {
   username: string;
   password: string;
   /**
-   * Optional full SIP transport URL, overriding the derived `wss://<domain>/`. Supports ws/wss,
-   * a non-standard port, and a path. Left unset for the common case; `domain` keeps its meaning
-   * (a bare hostname, used for the SIP URI and in the UI) either way.
+   * Full SIP transport URL (ws/wss, optional port and path). The options page always writes it,
+   * parsed out of the single Server field; `domain` is that URL's hostname and keeps its meaning
+   * (a bare hostname, used for the SIP URI and in the UI). Configs written before the fields were
+   * merged may lack it, in which case `deriveEndpoints` still falls back to `wss://<domain>/`.
    */
   serverUrl?: string;
 }
