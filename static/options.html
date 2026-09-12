@@ -20,8 +20,9 @@
     <main>
       <section id="section-account">
         <h2>Account</h2>
-        <p class="hint">Domain is the hostname only — no sip:, scheme, port, or path. To reach the server on a different scheme, port, or path, use Server URL below.</p>
-        <label>Domain <input id="acc-domain" placeholder="voice.example.com" autocomplete="off" /></label>
+        <label>Server <input id="acc-server" placeholder="voice.example.com" autocomplete="off" /></label>
+        <p class="hint">Defaults to wss://; a port or path may be added. ws:// is only for private-network or local debugging.</p>
+        <p id="acc-server-warning" class="warning" role="status" hidden></p>
         <label>Account <input id="acc-username" placeholder="1001" autocomplete="off" /></label>
         <label>Password
           <span class="pw-wrap">
@@ -29,14 +30,6 @@
             <button id="acc-pw-toggle" type="button" aria-label="Show password">👁</button>
           </span>
         </label>
-        <label>Server URL <input id="acc-server" placeholder="wss://voice.example.com/" autocomplete="off" /></label>
-        <p class="hint">
-          Optional, advanced. Leave it empty to use <code>wss://&lt;domain&gt;/</code>. Set it to reach the server
-          on a non-standard port or path, for example <code>wss://voice.example.com:7443/</code> or
-          <code>ws://192.168.1.10:5066/</code>. Warning: <code>ws://</code> is unencrypted — SIP signaling and your
-          credentials travel in the clear, and anyone on the network path can replace the DTLS fingerprint in the SDP
-          and listen to your call audio. Use it only on a network you trust.
-        </p>
         <p id="acc-status" class="status" role="status"></p>
         <div class="actions">
           <button id="acc-save">Save</button>
@@ -47,18 +40,12 @@
 
       <section id="section-sites" hidden>
         <h2>Allow Sites</h2>
-        <p class="hint">
-          Exact hostname match: no wildcards, no scheme, port, or path in the box, and subdomains are not
-          included automatically. Ports never take part in matching, so one entry covers every port on that host
-          (<code>crm.example.com</code> matches <code>https://crm.example.com:8443/tickets</code>). HTTPS only,
-          except private-network addresses — <code>localhost</code> and any <code>.localhost</code> name,
-          <code>127.x</code>, <code>10.x</code>, <code>172.16.x</code>–<code>172.31.x</code>,
-          <code>192.168.x</code> — which are also allowed over HTTP.
-        </p>
+        <p>Enter the exact hostname of an HTTPS site.<br />One entry covers every port and path on that host; subdomains must be added separately.</p>
         <div class="site-add">
           <input id="site-input" placeholder="crm.example.com" autocomplete="off" />
           <button id="site-add">Add</button>
         </div>
+        <p class="hint muted">Private-network hosts (localhost, 127.x, 10.x, 172.16–31.x, 192.168.x) are also accepted over HTTP.</p>
         <p id="site-error" class="error" role="alert"></p>
         <ul id="site-list"></ul>
       </section>

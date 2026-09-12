@@ -1,7 +1,8 @@
 import { clearAccount, loadConfig, saveConfig } from "../background/config-store.js";
 import { isMsg } from "../shared/messages.js";
 import { RuntimeState } from "../shared/state.js";
-import { normalizeHostname, originPatterns } from "../shared/allow-sites.js";
+import { allowSiteInputError, normalizeHostname, originPatterns } from "../shared/allow-sites.js";
+import { parseServerAddress, serverWarningText } from "../shared/server-address.js";
 import { MIC_CONSTRAINTS } from "../offscreen/media.js";
 
 declare const __SIPJS_REF__: string;
@@ -64,45 +65,43 @@ function setupPasswordToggle(inputId: string, toggleId: string): void {
 }
 setupPasswordToggle("acc-password", "acc-pw-toggle");
 
-/** A Server URL override must be a parseable URL on a SIP-over-WebSocket scheme. */
-function isTransportUrl(value: string): boolean {
-  try {
-    const protocol = new URL(value).protocol;
-    return protocol === "ws:" || protocol === "wss:";
-  } catch {
-    return false;
-  }
+/** Mirror the plaintext / mixed-content warning for whatever is currently typed in Server. */
+function updateServerWarning(): void {
+  const el = $("acc-server-warning");
+  const text = serverWarningText(parseServerAddress($<HTMLInputElement>("acc-server").value), location.protocol);
+  el.textContent = text ?? "";
+  el.hidden = text === null;
 }
+
+$("acc-server").addEventListener("input", updateServerWarning);
 
 async function initAccount(): Promise<void> {
   const cfg = await loadConfig();
   if (cfg.account) {
-    $<HTMLInputElement>("acc-domain").value = cfg.account.domain;
+    // Pre-merge configs may carry only a domain; it is a valid Server value on its own.
+    $<HTMLInputElement>("acc-server").value = cfg.account.serverUrl ?? cfg.account.domain;
     $<HTMLInputElement>("acc-username").value = cfg.account.username;
     $<HTMLInputElement>("acc-password").value = cfg.account.password;
-    $<HTMLInputElement>("acc-server").value = cfg.account.serverUrl ?? "";
   }
+  updateServerWarning();
 }
 
 $("acc-save").addEventListener("click", () => {
   void (async () => {
-    const domain = $<HTMLInputElement>("acc-domain").value.trim().toLowerCase();
+    const parsed = parseServerAddress($<HTMLInputElement>("acc-server").value);
+    if (!parsed.ok) {
+      setAccountStatus(parsed.error, true);
+      return;
+    }
     const username = $<HTMLInputElement>("acc-username").value.trim();
     const password = $<HTMLInputElement>("acc-password").value;
-    const serverUrl = $<HTMLInputElement>("acc-server").value.trim();
-    if (/[/:\s]/.test(domain)) {
-      setAccountStatus("Enter the hostname only (no scheme, port, or path).", true);
+    if (!(username && password)) {
+      setAccountStatus("Fill in Server, Account, and Password, or use Sign Out to clear the account.", true);
       return;
     }
-    if (!(domain && username && password)) {
-      setAccountStatus("Fill in Domain, Account, and Password, or use Sign Out to clear the account.", true);
-      return;
-    }
-    if (serverUrl && !isTransportUrl(serverUrl)) {
-      setAccountStatus("Server URL must be a full ws:// or wss:// URL, for example wss://voice.example.com:7443/.", true);
-      return;
-    }
-    await saveConfig({ account: { domain, username, password, ...(serverUrl ? { serverUrl } : {}) } });
+    await saveConfig({
+      account: { domain: parsed.domain, username, password, serverUrl: parsed.serverUrl }
+    });
     setAccountStatus("Saved. Web SIP Phone connects when an Allow Site page is open.");
     notifyConfigChanged();
   })();
@@ -111,9 +110,10 @@ $("acc-save").addEventListener("click", () => {
 $("acc-signout").addEventListener("click", () => {
   void (async () => {
     await clearAccount();
-    for (const id of ["acc-domain", "acc-username", "acc-password", "acc-server"]) {
+    for (const id of ["acc-server", "acc-username", "acc-password"]) {
       $<HTMLInputElement>(id).value = "";
     }
+    updateServerWarning();
     setAccountStatus("Account and credentials cleared.");
     notifyConfigChanged();
   })();
@@ -192,9 +192,10 @@ async function renderSites(): Promise<void> {
 $("site-add").addEventListener("click", () => {
   void (async () => {
     $("site-error").textContent = "";
-    const host = normalizeHostname($<HTMLInputElement>("site-input").value);
+    const raw = $<HTMLInputElement>("site-input").value;
+    const host = normalizeHostname(raw);
     if (!host) {
-      $("site-error").textContent = "Enter a bare hostname, e.g. crm.example.com";
+      $("site-error").textContent = allowSiteInputError(raw);
       return;
     }
     const cfg = await loadConfig();

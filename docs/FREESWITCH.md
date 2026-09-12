@@ -7,17 +7,16 @@ covers what FreeSWITCH must be configured to do, and how to test remote-control 
 
 ## 1. WebSocket / WebRTC prerequisites
 
-Web SIP Phone carries SIP over a WebSocket, and the Options page's optional **Server URL** field
+Web SIP Phone carries SIP over a WebSocket, and the Options page's single **Server** field
 (Account section) picks the transport:
 
-- **Left empty** — the endpoint is derived as `wss://<domain>/` (port 443, path `/`), the only
-  behavior earlier versions had.
-- **Filled in** — the value overrides the derivation whole: `ws://` or `wss://`, any port, any
-  path, e.g. `wss://voice.example.com:7443/` or `ws://192.168.1.10:5066/`.
+- **A bare hostname** — `voice.example.com` becomes `wss://voice.example.com/` (port 443, path `/`).
+- **A fuller address** — a scheme, port and path are all kept, e.g. `wss://voice.example.com:7443/`
+  or `ws://192.168.1.10:5066/`. `ws://` is accepted only for private-network and local addresses.
 
-Domain stays a bare hostname either way: it feeds the SIP URI (`sip:<user>@<domain>`) and the UI,
-not the WebSocket endpoint. So the WebSocket host and the SIP domain may differ — the browser can
-connect to `ws://192.168.1.10:5066/` while registering as `sip:1001@voice.example.com`.
+The SIP domain is the hostname of whatever is entered: it feeds the SIP URI (`sip:<user>@<domain>`)
+and the UI. Registering as `sip:1001@192.168.1.10` while connecting to `ws://192.168.1.10:5066/` is
+therefore the shape of a LAN setup — the SIP domain follows the WebSocket host.
 
 ### Path A — `wss://`, direct or through a reverse proxy
 
@@ -25,8 +24,8 @@ Required whenever the signaling path leaves a trusted network.
 
 - **`wss-binding`**: enable a WSS binding in the `sofia` profile the browser account registers
   against (typically the `internal` or a dedicated `verto`/WebRTC-facing profile), e.g.
-  `wss-binding :7443` — reachable either by setting Server URL to `wss://<host>:7443/`, or by
-  putting a reverse proxy on 443 so the derived `wss://<domain>/` works with no Server URL set.
+  `wss-binding :7443` — reachable either by setting Server to `wss://<host>:7443/`, or by
+  putting a reverse proxy on 443 so a bare hostname in Server (`wss://<host>/`) works.
 - **Reverse proxy must target the `wss` binding, not the plain `ws` one.** SIP.js stamps
   `Via: SIP/2.0/WSS` because the browser leg is TLS, and sofia **silently drops** (no 4xx, no
   log at default levels) any request whose Via transport does not match the socket transport it
@@ -53,7 +52,7 @@ Required whenever the signaling path leaves a trusted network.
 
 ### Path B — `ws://` straight to the `ws-binding` (trusted networks only)
 
-Set Server URL to `ws://<sip-ip>:5066/`. The `internal` profile's defaults are `ws-binding :5066`
+Set Server to `ws://<sip-ip>:5066/`. The `internal` profile's defaults are `ws-binding :5066`
 and `wss-binding :7443`, both bound on the profile's `sip-ip` (usually the LAN address) rather than
 loopback, so use that address, not `127.0.0.1`.
 
@@ -82,7 +81,7 @@ loopback, so use that address, not `127.0.0.1`.
 ## 2. Directory user example
 
 A minimal `directory/default/1001.xml` entry for the SIP account Web SIP Phone registers as
-(`sip:1001@voice.example.com`, matching the Options page Account/Domain fields):
+(`sip:1001@voice.example.com`, matching the Options page Account field and the Server hostname):
 
 ```xml
 <include>
@@ -153,7 +152,7 @@ instance and an unpacked build of `dist/`.
 
 | # | Item | How to verify | Result |
 | - | --- | --- | --- |
-| 1 | SIP over WebSocket | Load unpacked build, configure Account (Server URL empty for derived `wss://<domain>/`, or set to a `wss://`/`ws://` endpoint), open an Allow Site tab; confirm registration succeeds and the Web SIP Phone dot shows no error. Worth running once per transport in use | |
+| 1 | SIP over WebSocket | Load unpacked build, configure Account (Server as a bare hostname for `wss://<host>/`, or as a full `wss://`/`ws://` endpoint), open an Allow Site tab; confirm registration succeeds and the Web SIP Phone dot shows no error. Worth running once per transport in use | |
 | 2 | Two-way WebRTC audio | Place a test call (Agent First or inbound) and confirm audio flows both directions | |
 | 3 | REGISTER / unregister | Open first Allow Site tab (REGISTER in FreeSWITCH logs); close last Allow Site tab (unregister, Expires: 0) | |
 | 4 | Agent First outbound calls | `originate` with `Call-Info: ;answer-after=0` to the account; confirm auto-answer with no local UI **and no ringtone**, then `Event: talk` moves to ACTIVE | **PASS** (2026-09-10) — `originate {sip_h_Call-Info=<sip:fs>;answer-after=0}user/1001 &park()` against the native FreeSWITCH 1.11.1 via the local Caddy (`ws.aicc.test` → `192.168.31.55:7443`). Diag: `controlled outbound INVITE; auto-answering {delaySeconds:0}`; the ringtone `<audio>` element never left `paused=true` for the whole call (polled at 25 ms). FreeSWITCH saw 180 Ringing then 200 OK without any `uuid_phone_event`; `talk` afterwards logged `NOTIFY talk in DIALING → ACTIVE`, BYE ended it in ACTIVE. |

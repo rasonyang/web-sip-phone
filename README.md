@@ -43,14 +43,13 @@ certs, or `ws-binding` on a trusted network — `Call-Info <...>;answer-after=0`
 originations, and `uuid_phone_event <uuid> talk|hold` for remote answer/hold/resume.
 
 ## Configuration
-- **Account**: Domain (hostname only, e.g. `voice.example.com`), Account (e.g. `1001`), Password,
-  and an optional Server URL. The SIP URI is always derived as `sip:1001@voice.example.com`; the
-  WebSocket endpoint is derived as `wss://voice.example.com/` (port 443, path `/`, subprotocol
-  `sip`) while Server URL is empty. Filling Server URL replaces that derivation entirely and takes
-  any `ws://` or `wss://` URL — `wss://voice.example.com:7443/`, `ws://192.168.1.10:5066/` — so the
-  WebSocket host need not be the SIP domain. Plain `ws://` leaves SIP signaling unencrypted (media
-  is still DTLS-SRTP, but its fingerprints travel in cleartext SDP): trusted networks only, see
-  docs/FREESWITCH.md §1.
+- **Account**: Server (e.g. `voice.example.com`), Account (e.g. `1001`), and Password. Server takes
+  a bare hostname, which defaults to `wss://voice.example.com/` (port 443, path `/`, subprotocol
+  `sip`), or a fuller address with a scheme, port and path — `wss://voice.example.com:7443/`,
+  `ws://192.168.1.10:5066/`. The SIP domain is the hostname of whatever is entered, so the SIP URI
+  here is `sip:1001@voice.example.com`. Plain `ws://` leaves SIP signaling unencrypted (media is
+  still DTLS-SRTP, but its fingerprints travel in cleartext SDP) and is accepted only for
+  private-network and local addresses; see docs/FREESWITCH.md §1.
 - **Allow Sites**: exact hostnames, one per entry — no wildcards, no subdomain inheritance, and no
   scheme, port or path in the box. Ports never take part in matching, so one entry covers every port
   on that host. HTTPS only, except private-network addresses (`localhost` and any `.localhost` name,
@@ -105,8 +104,8 @@ hold (re-INVITE sendonly); `talk` again resumes. See docs/FREESWITCH.md for a fu
 ## Troubleshooting
 | Symptom | Check |
 | --- | --- |
-| Registration failed | The panel names the SIP reason (`403 Forbidden` → password, `404` → unknown extension); FreeSWITCH's WebSocket binding reachable at the configured Server URL, or at `wss://<domain>/` when that field is empty |
-| Voice server unreachable | Network and WebSocket endpoint (scheme, port and path of Server URL must match the sofia `ws-binding`/`wss-binding`); `Retry now` in the panel; backoff continues automatically |
+| Registration failed | The panel names the SIP reason (`403 Forbidden` → password, `404` → unknown extension); FreeSWITCH's WebSocket binding reachable at the address in the Server field |
+| Voice server unreachable | Network and WebSocket endpoint (the Server field's scheme, port and path must match the sofia `ws-binding`/`wss-binding`); `Retry now` in the panel; backoff continues automatically |
 | Microphone blocked | Options → Advanced → Test microphone (the panel's own test hands you there — only the Options page can raise Chrome's prompt), or chrome://settings/content/microphone |
 | Call audio failed | Configure TURN (Advanced); typical on symmetric NAT |
 | No dot on the page | Site listed exactly (no subdomain difference); HTTPS, or HTTP on a private-network address (`localhost`/`.localhost`, `127.x`, `10.x`, `172.16.x`–`172.31.x`, `192.168.x`); permission granted |
