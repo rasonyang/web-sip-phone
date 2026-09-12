@@ -64,12 +64,23 @@ function setupPasswordToggle(inputId: string, toggleId: string): void {
 }
 setupPasswordToggle("acc-password", "acc-pw-toggle");
 
+/** A Server URL override must be a parseable URL on a SIP-over-WebSocket scheme. */
+function isTransportUrl(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "ws:" || protocol === "wss:";
+  } catch {
+    return false;
+  }
+}
+
 async function initAccount(): Promise<void> {
   const cfg = await loadConfig();
   if (cfg.account) {
     $<HTMLInputElement>("acc-domain").value = cfg.account.domain;
     $<HTMLInputElement>("acc-username").value = cfg.account.username;
     $<HTMLInputElement>("acc-password").value = cfg.account.password;
+    $<HTMLInputElement>("acc-server").value = cfg.account.serverUrl ?? "";
   }
 }
 
@@ -78,6 +89,7 @@ $("acc-save").addEventListener("click", () => {
     const domain = $<HTMLInputElement>("acc-domain").value.trim().toLowerCase();
     const username = $<HTMLInputElement>("acc-username").value.trim();
     const password = $<HTMLInputElement>("acc-password").value;
+    const serverUrl = $<HTMLInputElement>("acc-server").value.trim();
     if (/[/:\s]/.test(domain)) {
       setAccountStatus("Enter the hostname only (no scheme, port, or path).", true);
       return;
@@ -86,7 +98,11 @@ $("acc-save").addEventListener("click", () => {
       setAccountStatus("Fill in Domain, Account, and Password, or use Sign Out to clear the account.", true);
       return;
     }
-    await saveConfig({ account: { domain, username, password } });
+    if (serverUrl && !isTransportUrl(serverUrl)) {
+      setAccountStatus("Server URL must be a full ws:// or wss:// URL, for example wss://voice.example.com:7443/.", true);
+      return;
+    }
+    await saveConfig({ account: { domain, username, password, ...(serverUrl ? { serverUrl } : {}) } });
     setAccountStatus("Saved. Web SIP Phone connects when an Allow Site page is open.");
     notifyConfigChanged();
   })();
@@ -95,7 +111,7 @@ $("acc-save").addEventListener("click", () => {
 $("acc-signout").addEventListener("click", () => {
   void (async () => {
     await clearAccount();
-    for (const id of ["acc-domain", "acc-username", "acc-password"]) {
+    for (const id of ["acc-domain", "acc-username", "acc-password", "acc-server"]) {
       $<HTMLInputElement>(id).value = "";
     }
     setAccountStatus("Account and credentials cleared.");

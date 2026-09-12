@@ -23,7 +23,7 @@ let registerResponse: ResponseLike | undefined;
 
 const CONFIG: RuntimeConfig = {
   sipUri: "sip:1001@voice.example.com",
-  wssUrl: "wss://voice.example.com/",
+  serverUrl: "wss://voice.example.com/",
   username: "1001",
   password: "pw",
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]

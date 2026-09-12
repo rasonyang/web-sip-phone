@@ -74,6 +74,8 @@ export interface StatusDetails {
   /** SIP account (extension) — the username only, never credentials. */
   account: string | null;
   domain: string | null;
+  /** The SIP transport URL in use — tells ws:// apart from wss:// when debugging. */
+  serverUrl: string | null;
   /** Epoch ms at which the current registration expires, for the countdown. */
   registrationExpiresAt: number | null;
   reconnect: ReconnectProgress | null;
@@ -87,6 +89,7 @@ export interface StatusDetails {
 export const EMPTY_DETAILS: StatusDetails = {
   account: null,
   domain: null,
+  serverUrl: null,
   registrationExpiresAt: null,
   reconnect: null,
   turnConfigured: false,

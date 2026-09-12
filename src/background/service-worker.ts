@@ -26,8 +26,8 @@ let micMeterOn = false;
 
 function desiredRuntimeConfig(): RuntimeConfig {
   const account = config.account!;
-  const { sipUri, wssUrl } = deriveEndpoints(account);
-  return { sipUri, wssUrl, username: account.username, password: account.password, iceServers: iceServers(config.turn) };
+  const { sipUri, serverUrl } = deriveEndpoints(account);
+  return { sipUri, serverUrl, username: account.username, password: account.password, iceServers: iceServers(config.turn) };
 }
 
 function displayState() {
@@ -38,6 +38,8 @@ function displayState() {
     identity: {
       account: config.account?.username ?? null,
       domain: config.account?.domain ?? null,
+      // The transport URL actually in use — derived or overridden — so diagnostics show ws vs wss.
+      serverUrl: isAccountComplete(config.account) ? deriveEndpoints(config.account).serverUrl : null,
       // "Configured" means calls can actually use it: an entry saved but switched off is not.
       turnConfigured: Boolean(config.turn?.enabled && config.turn.url)
     }

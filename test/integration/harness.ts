@@ -8,7 +8,7 @@ import { header, isRequest, replyTo } from "./sip-fixtures.js";
 
 export const CONFIG: RuntimeConfig = {
   sipUri: "sip:1001@voice.example.com",
-  wssUrl: "wss://voice.example.com/",
+  serverUrl: "wss://voice.example.com/",
   username: "1001",
   password: "pw",
   iceServers: []
@@ -22,7 +22,7 @@ export function testUaFactory(): UaFactory {
       const ua = new UserAgent({
         uri,
         transportConstructor: MockTransport as never,
-        transportOptions: { server: config.wssUrl },
+        transportOptions: { server: config.serverUrl },
         authorizationUsername: config.username,
         authorizationPassword: config.password,
         sessionDescriptionHandlerFactory: fakeSdhFactory,

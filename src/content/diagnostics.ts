@@ -24,6 +24,7 @@ export function buildDiagnostics(state: DisplayState, version: string, now: numb
     `Web SIP Phone ${version} — diagnostics`,
     `Generated: ${iso(now)}`,
     `Extension: ${d.account ?? "(not configured)"}${d.domain ? ` @ ${d.domain}` : ""}`,
+    `Server: ${d.serverUrl ?? "(not configured)"}`,
     `Runtime state: ${state.runtime}`,
     `Reconnecting: ${state.reconnecting ? "yes" : "no"}`,
     `On a call: ${state.busy ? "yes" : "no"}`,

@@ -2,11 +2,32 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_STUN, deriveEndpoints, iceServers, isAccountComplete } from "../../src/shared/config.js";
 
 describe("deriveEndpoints", () => {
-  it("derives SIP URI and WSS URL from hostname + account", () => {
+  it("derives SIP URI and the default wss server URL from hostname + account", () => {
     expect(deriveEndpoints({ domain: "voice.example.com", username: "1001", password: "x" })).toEqual({
       sipUri: "sip:1001@voice.example.com",
-      wssUrl: "wss://voice.example.com/"
+      serverUrl: "wss://voice.example.com/"
     });
+  });
+
+  it("an explicit serverUrl overrides the derived one, scheme, port and path included", () => {
+    expect(
+      deriveEndpoints({
+        domain: "voice.example.com",
+        username: "1001",
+        password: "x",
+        serverUrl: "ws://192.168.1.10:5066/sip"
+      })
+    ).toEqual({
+      sipUri: "sip:1001@voice.example.com",
+      serverUrl: "ws://192.168.1.10:5066/sip"
+    });
+  });
+
+  it("falls back to wss://<domain>/ when serverUrl is unset, empty or blank", () => {
+    const account = { domain: "voice.example.com", username: "1001", password: "x" };
+    expect(deriveEndpoints(account).serverUrl).toBe("wss://voice.example.com/");
+    expect(deriveEndpoints({ ...account, serverUrl: "" }).serverUrl).toBe("wss://voice.example.com/");
+    expect(deriveEndpoints({ ...account, serverUrl: "   " }).serverUrl).toBe("wss://voice.example.com/");
   });
 });
 

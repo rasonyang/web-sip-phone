@@ -15,6 +15,7 @@ const HEALTHY: DisplayState = {
     ...EMPTY_DETAILS,
     account: "1001",
     domain: "voice.example.com",
+    serverUrl: "wss://voice.example.com/",
     registrationExpiresAt: NOW + 252_000,
     micDeviceLabel: "Studio Mic",
     turnConfigured: true
@@ -34,6 +35,7 @@ describe("buildDiagnostics", () => {
     const text = buildDiagnostics(HEALTHY, "1.0.2", NOW);
     expect(text).toContain("Web SIP Phone 1.0.2");
     expect(text).toContain("Extension: 1001 @ voice.example.com");
+    expect(text).toContain("Server: wss://voice.example.com/");
     expect(text).toContain("Runtime state: READY");
     expect(text).toContain("SIP registration: up");
     expect(text).toContain("WebSocket: up");
@@ -83,6 +85,7 @@ describe("buildDiagnostics", () => {
       NOW
     );
     expect(text).toContain("Extension: (not configured)");
+    expect(text).toContain("Server: (not configured)");
     expect(text).toContain("no SIP account is configured");
   });
 });

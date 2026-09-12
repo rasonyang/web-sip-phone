@@ -27,7 +27,7 @@ export interface MicTestResult {
 
 export interface RuntimeConfig {
   sipUri: string;
-  wssUrl: string;
+  serverUrl: string;
   username: string;
   password: string;
   iceServers: RTCIceServer[];

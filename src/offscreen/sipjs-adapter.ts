@@ -12,7 +12,7 @@ export const realUaFactory: UaFactory = {
       uri,
       // CRLF keepalive so a socket orphaned by system sleep is detected as dead within
       // seconds (a send on it fails) instead of lingering until TCP gives up.
-      transportOptions: { server: config.wssUrl, keepAliveInterval: 20 },
+      transportOptions: { server: config.serverUrl, keepAliveInterval: 20 },
       authorizationUsername: config.username,
       authorizationPassword: config.password,
       sessionDescriptionHandlerFactoryOptions: {

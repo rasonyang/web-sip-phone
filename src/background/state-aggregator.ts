@@ -19,6 +19,7 @@ const ERROR_TO_RUNTIME: Record<ErrorCode, RuntimeState> = {
 export interface Identity {
   account: string | null;
   domain: string | null;
+  serverUrl: string | null;
   turnConfigured: boolean;
 }
 
@@ -38,6 +39,7 @@ export function computeDisplayState(input: {
   const details: StatusDetails = {
     account: identity?.account ?? null,
     domain: identity?.domain ?? null,
+    serverUrl: identity?.serverUrl ?? null,
     turnConfigured: identity?.turnConfigured ?? false,
     registrationExpiresAt: offscreen?.registrationExpiresAt ?? null,
     reconnect: offscreen?.reconnect ?? null,

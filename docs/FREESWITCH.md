@@ -1,16 +1,32 @@
 # FreeSWITCH Integration Notes
 
-Web SIP Phone is a status indicator, not a softphone: it registers a single SIP account over WSS,
-answers/holds/resumes only in response to FreeSWITCH-driven signaling, and shows nothing about
-call outcomes. This document covers what FreeSWITCH must be configured to do, and how to test
-remote-control behavior manually.
+Web SIP Phone is a status indicator, not a softphone: it registers a single SIP account over a
+WebSocket transport (`wss://`, or `ws://` on a trusted network), answers/holds/resumes only in
+response to FreeSWITCH-driven signaling, and shows nothing about call outcomes. This document
+covers what FreeSWITCH must be configured to do, and how to test remote-control behavior manually.
 
-## 1. WSS / WebRTC prerequisites
+## 1. WebSocket / WebRTC prerequisites
+
+Web SIP Phone carries SIP over a WebSocket, and the Options page's optional **Server URL** field
+(Account section) picks the transport:
+
+- **Left empty** — the endpoint is derived as `wss://<domain>/` (port 443, path `/`), the only
+  behavior earlier versions had.
+- **Filled in** — the value overrides the derivation whole: `ws://` or `wss://`, any port, any
+  path, e.g. `wss://voice.example.com:7443/` or `ws://192.168.1.10:5066/`.
+
+Domain stays a bare hostname either way: it feeds the SIP URI (`sip:<user>@<domain>`) and the UI,
+not the WebSocket endpoint. So the WebSocket host and the SIP domain may differ — the browser can
+connect to `ws://192.168.1.10:5066/` while registering as `sip:1001@voice.example.com`.
+
+### Path A — `wss://`, direct or through a reverse proxy
+
+Required whenever the signaling path leaves a trusted network.
 
 - **`wss-binding`**: enable a WSS binding in the `sofia` profile the browser account registers
   against (typically the `internal` or a dedicated `verto`/WebRTC-facing profile), e.g.
-  `wss-binding :7443` — or put a reverse proxy on 443 if Web SIP Phone's derived
-  `wss://<domain>/` (port 443, path `/`) must reach FreeSWITCH without a non-standard port.
+  `wss-binding :7443` — reachable either by setting Server URL to `wss://<host>:7443/`, or by
+  putting a reverse proxy on 443 so the derived `wss://<domain>/` works with no Server URL set.
 - **Reverse proxy must target the `wss` binding, not the plain `ws` one.** SIP.js stamps
   `Via: SIP/2.0/WSS` because the browser leg is TLS, and sofia **silently drops** (no 4xx, no
   log at default levels) any request whose Via transport does not match the socket transport it
@@ -34,6 +50,26 @@ remote-control behavior manually.
 - **Valid TLS**: the certificate presented on the WSS binding must be trusted by Chrome (a
   publicly trusted CA, or an internal CA installed in the OS/browser trust store) — Chrome refuses
   self-signed WebSocket certificates for `wss://` with no override UI in an extension context.
+
+### Path B — `ws://` straight to the `ws-binding` (trusted networks only)
+
+Set Server URL to `ws://<sip-ip>:5066/`. The `internal` profile's defaults are `ws-binding :5066`
+and `wss-binding :7443`, both bound on the profile's `sip-ip` (usually the LAN address) rather than
+loopback, so use that address, not `127.0.0.1`.
+
+- **No transport mismatch to avoid.** SIP.js derives the Via sent-protocol from the URL scheme, so
+  a `ws://` endpoint stamps `Via: SIP/2.0/WS` and matches the socket the request arrives on. The
+  silent-drop failure described in Path A is a property of proxying TLS down to plain `ws`, not of
+  `ws` itself; connecting directly to the `ws-binding` has nothing in between to create the
+  mismatch. No proxy and no certificate are involved.
+- **The cost is that signaling is in the clear.** REGISTER digest parameters, dialed numbers and
+  Call-IDs are all readable on the wire. WebRTC media stays encrypted — DTLS-SRTP is mandatory and
+  is unaffected — but the DTLS fingerprints are carried in the plaintext SDP, so an attacker on the
+  path can substitute their own and take over the media. Use this only on a trusted internal
+  network or for local development, never across the public internet.
+
+### Common to both paths
+
 - **ICE candidate ACL**: add `<param name="apply-candidate-acl" value="..."/>` (or the
   equivalent NAT/ACL configuration) in the relevant `sofia` profile so ICE candidates from the
   browser's network are accepted.
@@ -117,19 +153,19 @@ instance and an unpacked build of `dist/`.
 
 | # | Item | How to verify | Result |
 | - | --- | --- | --- |
-| 1 | SIP over WSS | Load unpacked build, configure Account, open an Allow Site tab; confirm registration succeeds and the Web SIP Phone dot shows no error | |
+| 1 | SIP over WebSocket | Load unpacked build, configure Account (Server URL empty for derived `wss://<domain>/`, or set to a `wss://`/`ws://` endpoint), open an Allow Site tab; confirm registration succeeds and the Web SIP Phone dot shows no error. Worth running once per transport in use | |
 | 2 | Two-way WebRTC audio | Place a test call (Agent First or inbound) and confirm audio flows both directions | |
 | 3 | REGISTER / unregister | Open first Allow Site tab (REGISTER in FreeSWITCH logs); close last Allow Site tab (unregister, Expires: 0) | |
-| 4 | Agent First outbound calls | `originate` with `Call-Info: ;answer-after=0` to the account; confirm auto-answer with no local UI **and no ringtone**, then `Event: talk` moves to ACTIVE | |
-| 5 | Normal inbound calls | Call the account from another extension/trunk with no `Answer-After`; confirm the bundled ringtone loops for as long as the call rings, while Web SIP Phone still renders no ringing UI (RINGING is internal-only) | |
-| 6 | BroadSoft `Event: talk` | `uuid_phone_event <uuid> talk` while RINGING and while DIALING; confirm ACTIVE in both cases, and that the ringtone stops on the RINGING one before the caller's audio arrives | |
+| 4 | Agent First outbound calls | `originate` with `Call-Info: ;answer-after=0` to the account; confirm auto-answer with no local UI **and no ringtone**, then `Event: talk` moves to ACTIVE | **PASS** (2026-09-10) — `originate {sip_h_Call-Info=<sip:fs>;answer-after=0}user/1001 &park()` against the native FreeSWITCH 1.11.1 via the local Caddy (`ws.aicc.test` → `192.168.31.55:7443`). Diag: `controlled outbound INVITE; auto-answering {delaySeconds:0}`; the ringtone `<audio>` element never left `paused=true` for the whole call (polled at 25 ms). FreeSWITCH saw 180 Ringing then 200 OK without any `uuid_phone_event`; `talk` afterwards logged `NOTIFY talk in DIALING → ACTIVE`, BYE ended it in ACTIVE. |
+| 5 | Normal inbound calls | Call the account from another extension/trunk with no `Answer-After`; confirm the bundled ringtone loops for as long as the call rings, while Web SIP Phone still renders no ringing UI (RINGING is internal-only) | **PASS** (2026-09-10) — `originate user/1001 &park()` (no Call-Info). Diag `normal inbound INVITE; awaiting remote answer` at +58 ms, ringtone element `paused=false` at +59 ms, and it stayed playing (loop) until the state left RINGING. FreeSWITCH received 180 Ringing and no 200 OK until `talk`. |
+| 6 | BroadSoft `Event: talk` | `uuid_phone_event <uuid> talk` while RINGING and while DIALING; confirm ACTIVE in both cases, and that the ringtone stops on the RINGING one before the caller's audio arrives | **PASS** (2026-09-10) — RINGING: `uuid_phone_event <uuid> talk` → diag `NOTIFY talk in RINGING {next:ACTIVE,execute:true}` at +4066 ms, ringtone `paused=true` at +4079 ms, i.e. 13 ms after the NOTIFY and before `accept()` produced the 200 OK FreeSWITCH logged next. DIALING: `NOTIFY talk in DIALING {next:ACTIVE,execute:false}`, no ringtone activity. Both ended in ACTIVE on BYE. |
 | 7 | BroadSoft `Event: hold` | `uuid_phone_event <uuid> hold` while ACTIVE; confirm HELD, then `talk` to resume | |
-| 8 | CANCEL | Send CANCEL before answer on a RINGING call; confirm the ringtone stops immediately and the call ends with no UI | |
+| 8 | CANCEL | Send CANCEL before answer on a RINGING call; confirm the ringtone stops immediately and the call ends with no UI | **PASS** (2026-09-10) — `uuid_kill <uuid>` while ringing: FreeSWITCH sent CANCEL, diag `session terminated in RINGING {mappedEvent:CANCEL}` at +17186 ms, ringtone `paused=true` at +17204 ms (18 ms later). `show channels` back to 0. |
 | 9 | BYE | Send BYE from FreeSWITCH while ACTIVE and while HELD; confirm call ends cleanly in both states | |
 | 10 | Google STUN | Default config (no TURN); confirm ICE/media succeeds on a normal (non-symmetric-NAT) network | |
 | 11 | Custom TURN | Configure TURN under Advanced, restart the runtime (close/reopen the last Allow Site tab or Retry), confirm a call succeeds through TURN | |
 | 12 | Multiple tabs | Open 2+ Allow Site tabs; confirm only one REGISTER and that all tabs show identical, synchronized state during a call | |
-| 13 | Closing the last Allow Site | Close the last Allow Site tab during an active call; confirm no leave prompt appears, the call stays up with audio (no BYE in the FreeSWITCH logs), and unregister/WSS close only happen once the call ends | |
+| 13 | Closing the last Allow Site | Close the last Allow Site tab during an active call; confirm no leave prompt appears, the call stays up with audio (no BYE in the FreeSWITCH logs), and unregister/WebSocket close only happen once the call ends | |
 | 13a | Page refresh during a call | Press F5 on the Allow Site page repeatedly during an active call; confirm audio never breaks, `sofia status profile internal reg` shows no re-REGISTER, the Call-ID in `show channels` is unchanged, and no new INVITE is offered. Each reloaded page shows the call already in progress (busy dot) | **PASS** (2026-09-02) — audio continuous and Call-ID stable across repeated F5. Log evidence for the 30 s call `09a5aca0-a457-4cc9-9c0a-e341042fd208` (13:10:52 → 13:11:22, a `mod_callcenter` dispatch to the WSS contact `agjfrtsf@…`): exactly one `New Channel` for that contact in the whole log, one INVITE at 13:10:52.456 and no further one, zero REGISTER/unregister/expire events for 1001 inside the window, and the closing BYE sent *by* FreeSWITCH (`mod_sofia.c:541`, `NORMAL_CLEARING`) after the bridged external leg hung up — not by the extension. The same contact was still registered afterwards. |
 | 14 | Configuration restored after Chrome restart | Restart Chrome; confirm Account, Allow Sites, and Advanced settings persist and registration resumes when an Allow Site tab is opened | |
 
