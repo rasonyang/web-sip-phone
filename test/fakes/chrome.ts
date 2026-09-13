@@ -32,9 +32,11 @@ export function installFakeChrome() {
 
   const runtimeOnMessage = new FakeEvent<[unknown, unknown, (response?: unknown) => void]>();
   const runtimeOnInstalled = new FakeEvent<[{ reason: string }]>();
+  const permissionsOnRemoved = new FakeEvent<[{ origins?: string[] }]>();
   const sentRuntimeMessages: unknown[] = [];
 
   const registeredScripts: Array<{ id: string; matches: string[] }> = [];
+  const executedScripts: Array<{ target: { tabId: number; allFrames?: boolean }; files: string[] }> = [];
 
   const permissionRequests: unknown[] = [];
   const permissionRemovals: unknown[] = [];
@@ -64,6 +66,11 @@ export function installFakeChrome() {
     sentTabMessages,
     sentRuntimeMessages,
     registeredScripts,
+    executedScripts,
+    /** Origins (`https://host/*`) the user has granted; null grants everything. */
+    _grantedOrigins: null as string[] | null,
+    /** Tab ids whose injection fails, as a closed or error-page tab would. */
+    _failInjectTabs: new Set<number>(),
     permissionRequests,
     permissionRemovals,
     removedTabs,
@@ -149,7 +156,14 @@ export function installFakeChrome() {
           if (i >= 0) registeredScripts.splice(i, 1);
         }
       },
-      getRegisteredContentScripts: async () => [...registeredScripts]
+      getRegisteredContentScripts: async () => [...registeredScripts],
+      executeScript: async (injection: { target: { tabId: number; allFrames?: boolean }; files: string[] }) => {
+        if (fake._failInjectTabs.has(injection.target.tabId)) {
+          throw new Error(`Cannot access contents of tab ${injection.target.tabId}`);
+        }
+        executedScripts.push(injection);
+        return [];
+      }
     },
 
     permissions: {
@@ -160,7 +174,10 @@ export function installFakeChrome() {
       remove: async (perms: unknown) => {
         permissionRemovals.push(perms);
         return true;
-      }
+      },
+      onRemoved: permissionsOnRemoved,
+      contains: async (perms: { origins?: string[] }) =>
+        fake._grantedOrigins === null || (perms.origins ?? []).every((o) => fake._grantedOrigins!.includes(o))
     },
 
     offscreen: {

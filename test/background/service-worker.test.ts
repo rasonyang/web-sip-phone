@@ -378,6 +378,137 @@ describe("content script + install", () => {
     fake.runtime.onInstalled.fire({ reason: "install" });
     await vi.waitFor(() => expect(fake.optionsOpened).toBe(1));
   });
+
+  it("registers the content script for the top frame only, with no stylesheet", async () => {
+    await boot({ allowSites: ["crm.example.com"] });
+    expect(fake.registeredScripts[0]).toMatchObject({ js: ["content.js"], allFrames: false });
+    expect(fake.registeredScripts[0]).not.toHaveProperty("css");
+  });
+});
+
+describe("revoking open tabs", () => {
+  const revokedTabs = () =>
+    fake.sentTabMessages
+      .filter((m) => (m.message as { type?: string }).type === "site/revoked")
+      .map((m) => m.tabId)
+      .sort();
+
+  it("removing a site revokes its open tabs only, and a change that removes nothing revokes nowhere", async () => {
+    fake._tabs.push(
+      { id: 1, url: "https://crm.example.com/" },
+      { id: 2, url: "https://app.example.com/" },
+      { id: 3, url: "https://other.example.com/" }
+    );
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+
+    seedConfig({ account: { ...ACCOUNT, username: "1002" }, allowSites: ["crm.example.com", "app.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(revokedTabs()).toEqual([]);
+
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([2]));
+  });
+
+  it("a host permission revoked outside Options revokes the tabs whose origin is no longer granted", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+    fake._grantedOrigins = ["https://crm.example.com/*"];
+    fake.permissions.onRemoved.fire({ origins: ["https://app.example.com/*"] });
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([2]));
+  });
+
+  it("repeated hellos from an allowed page open one grace window and never push its deadline back", async () => {
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake._openTab(1, "https://crm.example.com/");
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
+    const sender = { tab: { id: 1, url: "https://crm.example.com/" }, url: "https://crm.example.com/", frameId: 0 };
+    const hello = () => fake.runtime.onMessage.fire({ target: "background", type: "page/hello" }, sender, () => {});
+    const lastFault = () =>
+      (
+        fake.sentRuntimeMessages.filter((m) => (m as { target?: string }).target === "options").at(-1) as {
+          state: DisplayState;
+        }
+      ).state.details.provisionFault;
+    vi.useFakeTimers();
+    try {
+      hello();
+      await vi.advanceTimersByTimeAsync(6_000);
+      hello();
+      hello();
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(lastFault()).toBe("NOT_RECEIVED");
+      // A hello after the fault leaves it standing and opens no new window.
+      hello();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(lastFault()).toBe("NOT_RECEIVED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("injection into already-open tabs", () => {
+  const injectedTabs = () => fake.executedScripts.map((s) => s.target.tabId).sort();
+
+  it("an update injects into every open Allow Site tab, and nowhere else, without opening options", async () => {
+    fake._tabs.push(
+      { id: 1, url: "https://crm.example.com/queue" },
+      { id: 2, url: "https://other.example.com/" },
+      { id: 3, url: "http://crm.example.com/" }, // public host over plain http: not an Allow Site match
+      { id: 4, url: "http://192.168.31.55:8080/agent" },
+      { id: 5, url: "chrome://extensions/" }
+    );
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "192.168.31.55"] });
+    fake.runtime.onInstalled.fire({ reason: "update" });
+    await vi.waitFor(() => expect(injectedTabs()).toEqual([1, 4]));
+    for (const s of fake.executedScripts) {
+      expect(s).toEqual({ target: { tabId: s.target.tabId, allFrames: false }, files: ["content.js"] });
+    }
+    expect(fake.optionsOpened).toBe(0);
+  });
+
+  it("install injects too, and a browser update of Chrome itself does not", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await boot({ allowSites: ["crm.example.com"] });
+    fake.runtime.onInstalled.fire({ reason: "chrome_update" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fake.executedScripts).toEqual([]);
+    fake.runtime.onInstalled.fire({ reason: "install" });
+    await vi.waitFor(() => expect(injectedTabs()).toEqual([1]));
+  });
+
+  it("skips tabs whose host permission is not granted, and one failing tab does not stop the rest", async () => {
+    fake._tabs.push(
+      { id: 1, url: "https://crm.example.com/" },
+      { id: 2, url: "https://app.example.com/" },
+      { id: 3, url: "https://app.example.com/b" }
+    );
+    fake._grantedOrigins = ["https://app.example.com/*"];
+    fake._failInjectTabs.add(2);
+    await boot({ allowSites: ["crm.example.com", "app.example.com"] });
+    fake.runtime.onInstalled.fire({ reason: "update" });
+    await vi.waitFor(() => expect(injectedTabs()).toEqual([3]));
+  });
+
+  it("adding a site injects into its open tabs only; sites already allowed are left alone", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await vi.waitFor(() => expect(injectedTabs()).toEqual([2]));
+
+    // A config change that adds nothing (an account edit) injects nowhere.
+    fake.executedScripts.length = 0;
+    seedConfig({ account: { ...ACCOUNT, username: "1002" }, allowSites: ["crm.example.com", "app.example.com"] });
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await vi.waitFor(() =>
+      expect(fake.sentRuntimeMessages.some((m) => JSON.stringify(m).includes("sip:1002@"))).toBe(true)
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fake.executedScripts).toEqual([]);
+  });
 });
 
 describe("host-page provisioning", () => {

@@ -70,6 +70,9 @@ export type Msg =
   | { target: "background"; type: "page/provision"; credential: ProvisionRequest }
   | { target: "background"; type: "page/deprovision" }
   | { target: "content"; type: "mic/level"; level: number }
+  // This tab's site is no longer an Allow Site: the content script removes its widget, the
+  // presence marker and the page bridge.
+  | { target: "content"; type: "site/revoked" }
   | { target: "content"; type: "state/update"; state: DisplayState; pos: StoredDotPosition | null }
   | { target: "options"; type: "state/update"; state: DisplayState };
 

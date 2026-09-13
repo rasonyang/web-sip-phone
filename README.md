@@ -73,7 +73,7 @@ Signaling  ✓ WSS · expires in 4:12                    ›
 Microphone ✓ MacBook Pro Microphone              ▁▃▅▇
 TURN       ⚠ Not configured
 ──────────────────────────────────────────────────────
-Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.5
+Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.6
 ```
 
 - **Signaling** merges SIP registration and WebSocket — in SIP over WebSocket they cannot disagree —
@@ -98,13 +98,30 @@ Options. The page pushes a pre-hashed credential in; the extension answers with 
 only.
 
 **Presence marker.** On injection into an Allow Site page the content script sets
-`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.5"`),
+`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.6"`),
 synchronously, before the page's own scripts run. It is set only on Allow Site pages and only in
 the top frame, so it is the page's first-pass test for "the extension is installed *and* this site
-is allowed". It is a hint, not a guarantee: a content script injected earlier keeps running after
-the user removes the site from Allow Sites, and the marker is removed only once the extension
-declines a `hello` (at which point the bridge stops answering entirely). Treat the marker as the
-signal to say `hello`, and the `hello` reply — followed by a `state` message — as the confirmation.
+is allowed". Removing the site from Allow Sites (or revoking its host permission) removes the marker
+and the widget from every open tab on that site immediately, and stops the bridge answering. Every
+`hello` is also checked with the service worker, even when the content script already has state to
+answer with, and one from a site that is no longer allowed is declined: the reply may already be
+out, but the marker, the widget and the bridge go with the decline and later messages get no answer.
+Treat the marker as the signal to say `hello`, and the `hello` reply — followed by a `state`
+message — as the confirmation.
+
+**Already-open tabs.** The page never needs to be refreshed for the extension to reach it. When the
+extension is installed or updated, and when a site is added to Allow Sites, the content script is
+injected straight into every open tab on an Allow Site whose host permission is granted. The new
+instance sets the marker and posts a `state` message unsolicited as soon as it has state, so a page
+already listening for `state` sees it without sending `hello` again (a fresh `hello` is answered as
+usual). An update or reload leaves the previous content script orphaned: it tears itself down —
+removing its widget and the marker, and no longer answering `hello` — when the new instance
+replaces it, or as soon as it notices its extension context is gone. If the extension is disabled or
+removed with no replacement, the marker goes the next time the orphan is asked anything (a `hello`,
+the tab regaining focus), so a page that sees the marker but gets no `hello` reply should treat the
+extension as absent. One exception on the first update to 1.0.6 only: a 1.0.5 content script predates
+this teardown, so its widget is removed but it can still answer a `hello` from an open tab with its
+old `extensionVersion`; ignore a `hello` reply whose `extensionVersion` is older than one already seen.
 
 **Transport.** `window.postMessage` on the page's own window — no `externally_connectable`, no
 custom events. The content script accepts a message only when `event.source === window` and
@@ -282,9 +299,9 @@ plain regeneration reproduces the same bytes).
 
 ## Test coverage
 
-`npm test` runs 26 files / 457 tests: unit tests (header parsing, the call state machine, the
+`npm test` runs 27 files / 485 tests: unit tests (header parsing, the call state machine, the
 ringtone player, Allow Site matching, multiple-call rejection, error priority, the page-facing
-provisioning bridge, and the microphone permission watcher and gate) plus integration
+provisioning bridge, content-script teardown and replacement after an extension reload, and the microphone permission watcher and gate) plus integration
 tests against a mock SIP transport that exercise design.md §22.2 items 1–12 end to end (REGISTER
 success/failure, WSS disconnect/reconnect, Answer-After auto-answer, normal INVITE → RINGING with
 the ringtone starting, Talk while RINGING/DIALING/HELD, Hold while ACTIVE, CANCEL while RINGING,
