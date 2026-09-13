@@ -315,6 +315,7 @@ export class WebSipPhoneView {
   /** Kept across re-renders so a redrawn meter is not blank until the next 100ms tick. */
   private lastMicLevel = 0;
   private micStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  private copyStatusTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private host: HTMLElement,
@@ -349,22 +350,43 @@ export class WebSipPhoneView {
     // Popover dismissal: the panel has no close button (matching the host application), so
     // clicking away or pressing Escape must close it. Events outside the shadow root retarget
     // to the host element, so containment covers clicks on the widget itself.
-    document.addEventListener(
-      "pointerdown",
-      (e) => {
-        if (this.panelOpen && !host.contains(e.target as Node)) {
-          this.panelOpen = false;
-          this.render();
-        }
-      },
-      true
-    );
-    document.addEventListener("keydown", (e) => {
-      if (this.panelOpen && e.key === "Escape") {
-        this.panelOpen = false;
-        this.render();
-      }
-    });
+    document.addEventListener("pointerdown", this.onDocumentPointerDown, true);
+    document.addEventListener("keydown", this.onDocumentKeyDown);
+  }
+
+  private readonly onDocumentPointerDown = (e: PointerEvent): void => {
+    if (this.panelOpen && !this.host.contains(e.target as Node)) {
+      this.panelOpen = false;
+      this.render();
+    }
+  };
+
+  private readonly onDocumentKeyDown = (e: KeyboardEvent): void => {
+    if (this.panelOpen && e.key === "Escape") {
+      this.panelOpen = false;
+      this.render();
+    }
+  };
+
+  /**
+   * Stop everything the view started outside its own shadow tree: the document listeners and
+   * every timer. The host element itself belongs to the caller. Idempotent.
+   */
+  destroy(): void {
+    document.removeEventListener("pointerdown", this.onDocumentPointerDown, true);
+    document.removeEventListener("keydown", this.onDocumentKeyDown);
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
+    if (this.micStatusTimer) {
+      clearTimeout(this.micStatusTimer);
+      this.micStatusTimer = null;
+    }
+    if (this.copyStatusTimer) {
+      clearTimeout(this.copyStatusTimer);
+      this.copyStatusTimer = null;
+    }
   }
 
   update(state: DisplayState): void {
@@ -771,7 +793,11 @@ export class WebSipPhoneView {
       this.copyStatus = "Copy failed";
     }
     this.render();
-    setTimeout(() => {
+    if (this.copyStatusTimer) {
+      clearTimeout(this.copyStatusTimer);
+    }
+    this.copyStatusTimer = setTimeout(() => {
+      this.copyStatusTimer = null;
       this.copyStatus = null;
       this.render();
     }, 2000);

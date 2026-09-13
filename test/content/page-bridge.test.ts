@@ -160,19 +160,33 @@ describe("PageBridge hello", () => {
     expect(sent).toEqual([]);
   });
 
-  it("answers from the last published state without asking the worker", async () => {
+  it("answers from the last published state at once, and still checks with the worker", async () => {
+    bridge.attach();
+    bridge.publish(displayState("connecting"));
+    await flush();
+    posts = [];
+    requestResult = { state: displayState("connecting"), pos: null };
+
+    fromPage({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-7" });
+    await flush();
+
+    // The worker's identical answer adds no second state.
+    expect(posts).toHaveLength(2);
+    expect(posts[0]).toMatchObject({ type: "hello", nonce: "n-7" });
+    expect(posts[1]).toMatchObject({ type: "state", registration: "REGISTERING" });
+    expect(requested).toEqual([{ target: "background", type: "page/hello" }]);
+  });
+
+  it("follows a cached answer with the worker's fresher state when they differ", async () => {
     bridge.attach();
     bridge.publish(displayState("connecting"));
     await flush();
     posts = [];
 
-    fromPage({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-7" });
+    fromPage({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-8" });
     await flush();
 
-    expect(posts).toHaveLength(2);
-    expect(posts[0]).toMatchObject({ type: "hello", nonce: "n-7" });
-    expect(posts[1]).toMatchObject({ type: "state", registration: "REGISTERING" });
-    expect(requested).toEqual([]);
+    expect(posts.map((p) => p.registration ?? p.type)).toEqual(["hello", "REGISTERING", "REGISTERED"]);
   });
 
   it("stays silent when the worker has no state to give", async () => {
@@ -231,6 +245,50 @@ describe("PageBridge worker decline", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ type: "hello", nonce: "n-2" });
     expect(requested).toHaveLength(2);
+  });
+
+  it("a cached state does not shield a removed site from the decline", async () => {
+    let declined = 0;
+    bridge = new PageBridge({
+      win: window,
+      version: VERSION,
+      extensionId: EXT_ID,
+      send: (msg) => sent.push(msg),
+      request: () => Promise.resolve(requestResult),
+      onDeclined: () => declined++
+    });
+    bridge.attach();
+    bridge.publish(displayState("up"));
+    await flush();
+    posts = [];
+
+    requestResult = undefined; // the site was removed; the cache still says REGISTERED
+    fromPage(hello("n-1"));
+    await flush();
+    expect(declined).toBe(1);
+
+    posts = [];
+    fromPage(hello("n-2"));
+    await flush();
+    expect(posts).toEqual([]);
+  });
+
+  it("keeps the cached answer, the marker and the listener when the worker is asleep", async () => {
+    bridge.attach();
+    bridge.publish(displayState("up"));
+    await flush();
+    posts = [];
+    requestResult = null;
+
+    fromPage(hello("n-1"));
+    await flush();
+    expect(posts.map((p) => p.type)).toEqual(["hello", "state"]);
+    expect(document.documentElement.dataset.webSipPhone).toBe(VERSION);
+
+    posts = [];
+    fromPage(hello("n-2"));
+    await flush();
+    expect(posts.map((p) => p.type)).toEqual(["hello", "state"]);
   });
 });
 
@@ -370,5 +428,52 @@ describe("PageBridge detach", () => {
     expect(posts).toEqual([]);
     expect(sent).toEqual([]);
     expect(requested).toEqual([]);
+  });
+
+  it("posts nothing for a worker answer that lands after detach", async () => {
+    let answer: (ts: TabState) => void = () => {};
+    bridge = new PageBridge({
+      win: window,
+      version: VERSION,
+      extensionId: EXT_ID,
+      send: (msg) => sent.push(msg),
+      request: () => new Promise((resolve) => (answer = resolve))
+    });
+    bridge.attach();
+    fromPage({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-1" });
+    await flush();
+    posts.length = 0;
+    bridge.detach();
+    answer({ state: displayState("up"), pos: null });
+    await flush();
+    expect(posts).toEqual([]);
+  });
+});
+
+describe("PageBridge liveness", () => {
+  it("an orphaned bridge neither answers nor relays, and stops listening", async () => {
+    let alive = true;
+    bridge = new PageBridge({
+      win: window,
+      version: VERSION,
+      extensionId: EXT_ID,
+      send: (msg) => sent.push(msg),
+      request: () => Promise.resolve(requestResult),
+      alive: () => alive
+    });
+    bridge.attach();
+    bridge.publish(displayState("up"));
+    await flush();
+    posts.length = 0;
+    alive = false;
+    fromPage({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-1" });
+    fromPage(provisionMessage());
+    await flush();
+    expect(posts).toEqual([]);
+    expect(sent).toEqual([]);
+    alive = true;
+    fromPage({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-2" });
+    await flush();
+    expect(posts).toEqual([]);
   });
 });

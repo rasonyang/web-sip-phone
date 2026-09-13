@@ -24,6 +24,18 @@ export interface PageBridgeEnv {
    * all (worker asleep or unreachable), which says nothing about whether the site is allowed.
    */
   request: (msg: Msg) => Promise<TabState | null | undefined>;
+  /**
+   * False once the extension context behind this content script is gone (reload, update,
+   * disable). Checked before answering anything: an orphaned script would otherwise reply to a
+   * hello with the version and state it froze at. Absent means always alive.
+   */
+  alive?: () => boolean;
+  /**
+   * The worker explicitly declined a hello: this site is no longer an Allow Site. The owner tears
+   * down everything it built (the bridge included). Absent, the bridge withdraws only itself —
+   * the marker and its own listener.
+   */
+  onDeclined?: () => void;
 }
 
 /**
@@ -95,6 +107,10 @@ export class PageBridge {
     if (inbound === null) {
       return;
     }
+    if (this.env.alive && !this.env.alive()) {
+      this.detach();
+      return;
+    }
     switch (inbound.type) {
       case "hello":
         this.post({
@@ -119,22 +135,33 @@ export class PageBridge {
   };
 
   /**
-   * A hello is always answered with state: the cached one, or a fresh pull from the worker.
+   * A hello is always answered with state — and always checked with the worker.
+   *
+   * A cached state is posted at once, so a page gets its answer even while the MV3 worker is
+   * asleep, but the worker is asked regardless: the cache cannot tell that the site has since been
+   * removed from Allow Sites, and a tab on a removed site gets no further broadcasts, so a cache
+   * that answered on its own would keep claiming a registration forever. A fresh state that
+   * matches the cached one posts nothing more (publish() de-duplicates).
    *
    * An explicit decline is the one case that ends the bridge. The presence marker means "the
    * extension is installed *and* this site is allowed", so it must not outlive the site's Allow
-   * listing: a content script already injected when the user removes the site keeps running, and
-   * the worker's refusal is the only signal it gets. No answer at all is not a refusal — an MV3
-   * worker is routinely asleep — so that case leaves the marker and the listener in place.
+   * listing. No answer at all is not a refusal — an MV3 worker is routinely asleep — so that case
+   * leaves the cached answer, the marker and the listener in place.
    */
   private async postCurrentState(): Promise<void> {
     if (this.last !== null) {
       this.post(toPageState(this.last));
-      return;
     }
     const ts = await this.env.request({ target: "background", type: "page/hello" });
+    if (!this.listening) {
+      return; // detached while the worker was answering (replaced, or the context went away)
+    }
     if (ts === undefined) {
-      delete this.env.win.document.documentElement.dataset.webSipPhone;
+      if (this.env.onDeclined) {
+        this.env.onDeclined();
+      } else {
+        delete this.env.win.document.documentElement.dataset.webSipPhone;
+      }
       this.detach();
       return;
     }

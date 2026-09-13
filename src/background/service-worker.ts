@@ -15,6 +15,11 @@ import {
 import { TabTracker } from "./tab-tracker.js";
 
 const SCRIPT_PREFIX = "web-sip-phone-";
+/**
+ * The content script as registered, shared with the injection into already-open tabs so the two
+ * cannot drift: top frame only, and no stylesheet (the widget styles itself inside its shadow root).
+ */
+const CONTENT_SCRIPT = { js: ["content.js"], allFrames: false } as const;
 const OPEN_SECTION_KEY = "websipphone.openSection";
 /**
  * How long an Allow Site page gets to provision after it says hello before the absence is
@@ -387,13 +392,102 @@ async function syncContentScripts(): Promise<void> {
     await chrome.scripting.registerContentScripts(
       toAdd.map((host) => ({
         id: SCRIPT_PREFIX + host,
-        js: ["content.js"],
+        js: [...CONTENT_SCRIPT.js],
+        allFrames: CONTENT_SCRIPT.allFrames,
         matches: originPatterns(host),
         runAt: "document_idle" as const,
         persistAcrossSessions: true
       }))
     );
   }
+}
+
+/**
+ * Inject the content script into every open tab already showing one of `sites`.
+ *
+ * A registered content script only runs on the next navigation, so without this a tab that was
+ * open when the extension was installed or updated, or when its site was added to Allow Sites,
+ * shows nothing until the user refreshes it — and after an update its old content script is
+ * orphaned. The injected instance replaces any earlier one itself (content/instance.ts).
+ *
+ * Only tabs whose origin the user has actually granted: a site can sit in Allow Sites with its
+ * host permission since revoked. Every tab stands alone — a discarded tab, a navigation racing
+ * the injection or an error page must not keep the others from getting the script.
+ */
+async function injectIntoOpenTabs(sites: string[]): Promise<void> {
+  if (sites.length === 0) {
+    return;
+  }
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id === undefined || !tab.url || !urlMatchesAllowSite(tab.url, sites)) {
+        return;
+      }
+      try {
+        const granted = await chrome.permissions.contains({ origins: [`${new URL(tab.url).origin}/*`] });
+        if (!granted) {
+          return;
+        }
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: CONTENT_SCRIPT.allFrames },
+          files: [...CONTENT_SCRIPT.js]
+        });
+      } catch (e) {
+        console.debug("[WebSipPhone] content script injection skipped", tab.id, e);
+      }
+    })
+  );
+}
+
+/** Tell the content script in each `tabIds` tab that its site is no longer allowed. */
+function revokeTabs(tabIds: number[]): void {
+  const msg: Msg = { target: "content", type: "site/revoked" };
+  for (const tabId of tabIds) {
+    // A tab with no content script (never injected, already torn down) simply has no receiver.
+    void chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+  }
+}
+
+/**
+ * Withdraw the widget and presence marker from open tabs on sites just removed from Allow Sites.
+ * The removed tab gets no broadcasts any more, so without this its content script would keep
+ * showing the last state — and the page would see the marker — until the page happened to say
+ * hello and be declined.
+ */
+async function revokeOpenTabs(sites: string[]): Promise<void> {
+  if (sites.length === 0) {
+    return;
+  }
+  const tabs = await chrome.tabs.query({});
+  revokeTabs(
+    tabs.filter((t) => t.id !== undefined && t.url && urlMatchesAllowSite(t.url, sites)).map((t) => t.id!)
+  );
+}
+
+/**
+ * Host permission revoked outside Options (chrome://extensions, the toolbar menu) while the site
+ * stays in Allow Sites. The registered script can no longer run there, so open tabs whose origin
+ * is no longer granted are withdrawn the same way a removed site's are.
+ */
+async function revokeUngrantedTabs(): Promise<void> {
+  const tabs = await chrome.tabs.query({});
+  const ungranted: number[] = [];
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id === undefined || !tab.url || !urlMatchesAllowSite(tab.url, config.allowSites)) {
+        return;
+      }
+      try {
+        if (!(await chrome.permissions.contains({ origins: [`${new URL(tab.url).origin}/*`] }))) {
+          ungranted.push(tab.id);
+        }
+      } catch {
+        // Unanswerable for this tab; leave it alone.
+      }
+    })
+  );
+  revokeTabs(ungranted);
 }
 
 /**
@@ -525,6 +619,9 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       await syncContentScripts();
       await tracker.refresh();
       await evaluate();
+      // After evaluate(), so an injected script's ui/getState is answered with the new state.
+      await injectIntoOpenTabs(config.allowSites.filter((h) => !previous.allowSites.includes(h)));
+      await revokeOpenTabs(previous.allowSites.filter((h) => !config.allowSites.includes(h)));
       break;
     }
     case "ui/resync":
@@ -543,7 +640,8 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       const helloUrl = pageSenderUrl(sender);
       sendResponse(helloUrl !== null ? tabState() : undefined);
       // A page that says hello with nothing held is expected to provision. Give it the grace
-      // window, once: a second hello (a reload, a second tab) must not keep resetting the
+      // window, once: a second hello (a reload, a second tab, or the same page again — the
+      // content script forwards every hello, cached state or not) must not keep resetting the
       // deadline, and a fault already reported stands until a provision or a re-sync retracts
       // it. Not a fault in itself — plenty of Allow Sites never provision at all.
       if (helloUrl !== null && !provisioned && provisionFault === null && awaitingProvisionSince === null) {
@@ -605,6 +703,23 @@ export function initServiceWorker(): Promise<void> {
 }
 
 async function doInit(): Promise<void> {
+  // Registered before the first await: an MV3 worker only receives the events it has a listener
+  // for by the end of its first turn, and onInstalled is dispatched once, right after startup.
+  chrome.runtime.onInstalled.addListener((details) => {
+    if (details.reason === "install") {
+      void chrome.runtime.openOptionsPage();
+    }
+    if (details.reason === "install" || details.reason === "update") {
+      // Open Allow Site tabs get the new content script now; after an update their old one is
+      // orphaned and would otherwise sit there frozen until the tab is refreshed. Config is
+      // only read once initialisation has finished.
+      void initServiceWorker().then(() => injectIntoOpenTabs(config.allowSites));
+    }
+  });
+  chrome.permissions.onRemoved.addListener(() => {
+    void initServiceWorker().then(() => revokeUngrantedTabs());
+  });
+
   config = await loadConfig();
   // An MV3 worker is killed whenever it goes idle; a restart must come back with the same
   // credential rather than silently demoting a provisioned registration to the manual account.
@@ -625,12 +740,6 @@ async function doInit(): Promise<void> {
     }
     void handleMessage(raw, sender, sendResponse);
     return raw.type === "ui/getState" || raw.type === "page/hello"; // async response only for these
-  });
-
-  chrome.runtime.onInstalled.addListener((details) => {
-    if (details.reason === "install") {
-      void chrome.runtime.openOptionsPage();
-    }
   });
 
   await tracker.init();
