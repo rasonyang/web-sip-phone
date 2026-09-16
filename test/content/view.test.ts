@@ -227,12 +227,78 @@ describe("fault state", () => {
     expect(panel()).toBeNull();
   });
 
-  it("keeps the fault panel open against a dot click", () => {
+  it("collapses the fault panel on a dot click", () => {
+    fault("REGISTRATION_FAILED", RuntimeState.RegistrationFailed);
+    expect(panel()).toBeTruthy();
+    openPanel();
+    expect(panel()).toBeNull();
+  });
+});
+
+// A fault auto-expands once. The user can put it away again by any of the three standard
+// dismissal routes, and the red dot on the button keeps saying that something is broken.
+describe("fault panel dismissal", () => {
+  const statusDot = () => root().querySelector("[data-role=status-dot]") as HTMLElement;
+  const backoff = (attempt: number) => ({
+    details: { ...READY.details, reconnect: { attempt, nextAttemptAt: NOW + 30_000 } }
+  });
+  const withReason = (reasonPhrase: string) =>
+    fault("REGISTRATION_FAILED", RuntimeState.RegistrationFailed, {
+      details: { ...READY.details, lastError: { code: "REGISTRATION_FAILED", reasonPhrase } }
+    });
+
+  it("leaves the fault on the status dot after a dot click collapses the panel", () => {
     fault("REGISTRATION_FAILED", RuntimeState.RegistrationFailed);
     openPanel();
-    expect(panel()).toBeTruthy();
-    view.update(READY);
     expect(panel()).toBeNull();
+    expect(statusDot().className).toContain("status-err");
+  });
+
+  it("collapses the fault panel on a click elsewhere on the page", () => {
+    fault("REGISTRATION_FAILED", RuntimeState.RegistrationFailed);
+    // jsdom has no PointerEvent constructor; the listener only reads type and target.
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(panel()).toBeNull();
+  });
+
+  it("collapses the fault panel on Escape", () => {
+    fault("REGISTRATION_FAILED", RuntimeState.RegistrationFailed);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(panel()).toBeNull();
+  });
+
+  it("stays collapsed while the same fault keeps retrying", () => {
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost, backoff(18));
+    openPanel();
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost, backoff(19));
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost, backoff(20));
+    expect(panel()).toBeNull();
+  });
+
+  it("expands again when the server's reason changes", () => {
+    withReason("403 Forbidden");
+    openPanel();
+    expect(panel()).toBeNull();
+    withReason("404 Not Found");
+    expect(panel()).toBeTruthy();
+  });
+
+  it("expands again for a fault that returns after clearing", () => {
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost);
+    openPanel();
+    view.update(READY);
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost);
+    expect(panel()).toBeTruthy();
+  });
+
+  it("reopens on demand, and the retry countdown does not close it again", () => {
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost, backoff(18));
+    openPanel();
+    openPanel();
+    expect(panel()).toBeTruthy();
+    fault("CONNECTION_LOST", RuntimeState.ConnectionLost, backoff(19));
+    expect(panel()).toBeTruthy();
+    expect(root().querySelector("[data-role=act-primary]")!.textContent).toBe("Retry now");
   });
 });
 

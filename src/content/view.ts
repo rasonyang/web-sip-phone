@@ -301,6 +301,10 @@ export class WebSipPhoneView {
   private statusDot: HTMLElement;
   private state: DisplayState | null = null;
   private panelOpen = false;
+  /** The fault identity the user collapsed; that one fault no longer auto-expands the panel. */
+  private dismissedFault: string | null = null;
+  /** The fault identity the previous update carried, to notice when it changes. */
+  private lastFaultKey: string | null = null;
   private detailsOpen = false;
   private expanded = false;
   private now: () => number;
@@ -340,10 +344,11 @@ export class WebSipPhoneView {
     this.statusDot.setAttribute("data-role", "status-dot");
     this.dot.appendChild(this.statusDot);
     this.dot.addEventListener("click", () => {
-      if (this.state?.error) {
-        return; // a fault holds the panel open; it is dismissed by fixing it, not by clicking
+      if (this.isExpanded()) {
+        this.collapse();
+      } else {
+        this.panelOpen = true;
       }
-      this.panelOpen = !this.panelOpen;
       this.render();
     });
 
@@ -355,15 +360,15 @@ export class WebSipPhoneView {
   }
 
   private readonly onDocumentPointerDown = (e: PointerEvent): void => {
-    if (this.panelOpen && !this.host.contains(e.target as Node)) {
-      this.panelOpen = false;
+    if (this.isExpanded() && !this.host.contains(e.target as Node)) {
+      this.collapse();
       this.render();
     }
   };
 
   private readonly onDocumentKeyDown = (e: KeyboardEvent): void => {
-    if (this.panelOpen && e.key === "Escape") {
-      this.panelOpen = false;
+    if (this.isExpanded() && e.key === "Escape") {
+      this.collapse();
       this.render();
     }
   };
@@ -391,9 +396,19 @@ export class WebSipPhoneView {
 
   update(state: DisplayState): void {
     this.state = state;
-    if (state.error) {
-      this.panelOpen = false; // auto-expand owns the panel while a fault is up
+    // Auto-expand fires once per fault, not once per update: a fault that is still the same
+    // fault leaves the panel exactly as the user left it. Clearing the error counts as a
+    // change, so a fault that comes back after a successful retry expands again.
+    const key = this.faultKey(state);
+    if (key !== this.lastFaultKey) {
+      this.dismissedFault = null;
+      if (key !== null) {
+        // A new fault takes the panel over; whatever the user had open before it arrived does
+        // not carry across the boundary.
+        this.panelOpen = false;
+      }
     }
+    this.lastFaultKey = key;
     if (this.micTestPending) {
       // The offscreen test reports through the normal status broadcast rather than a reply,
       // so the first state to arrive after the request carries its verdict.
@@ -412,8 +427,31 @@ export class WebSipPhoneView {
     });
   }
 
+  /**
+   * What makes a fault a distinct piece of news: the code plus the reason phrase the panel
+   * puts on screen. The retry counter is deliberately left out — attempt 19 of the same failing
+   * registration is the same news as attempt 18, and must not take the screen back after the
+   * user has collapsed it.
+   */
+  private faultKey(state: DisplayState): string | null {
+    if (state.error === null) {
+      return null;
+    }
+    return `${state.error}:${state.details.lastError?.reasonPhrase ?? ""}`;
+  }
+
   private isExpanded(): boolean {
-    return this.state !== null && (this.state.error !== null || this.panelOpen);
+    const state = this.state;
+    return (
+      state !== null &&
+      (this.panelOpen || (state.error !== null && this.faultKey(state) !== this.dismissedFault))
+    );
+  }
+
+  /** Close, and record which fault was closed so auto-expand does not immediately undo it. */
+  private collapse(): void {
+    this.panelOpen = false;
+    this.dismissedFault = this.state ? this.faultKey(this.state) : null;
   }
 
   private render(): void {
