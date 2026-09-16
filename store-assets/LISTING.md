@@ -6,7 +6,7 @@ changes, change it here in the same commit.
 
 - **Category:** Workflow & Planning
 - **Language:** English
-- **Version:** 1.0.6
+- **Version:** 1.0.7
 - **Privacy policy URL:** https://github.com/rasonyang/web-sip-phone/blob/main/PRIVACY.md
 - **Support URL:** https://github.com/rasonyang/web-sip-phone/issues
 
@@ -46,8 +46,9 @@ HOW IT WORKS
   microphone with its device name and a live input level, and TURN readiness
 • A fault opens the panel on its own, names the server's own reason — "Registration
   failed (403 Forbidden) — check password in Settings" — counts down to the next
-  retry, and offers the one action that fixes it. It stays open until the fault
-  clears; a fault is dismissed by fixing it, not by hiding it
+  retry, and offers the one action that fixes it. Put it away with the button, a
+  click elsewhere, or Escape — the red badge keeps reporting the fault, and the
+  same fault will not push the panel back open
 • Copy diagnostics puts the whole picture on your clipboard for a support ticket.
   Your SIP password is never included — it never leaves Settings
 • An allowed page can hand the extension its SIP credential, so a user signed in to your

@@ -14,8 +14,9 @@ Call activity never moves the badge: it tints the button itself indigo and says 
 (`On a call`). State is never carried by colour alone — the same wording is on the button's tooltip
 and `aria-label`, and the panel repeats every signal as a check / warning / cross shape.
 
-Clicking the widget opens the `Voice connection` panel (see below); a fault opens it on its own and
-holds it open until the fault clears.
+Clicking the widget opens the `Voice connection` panel (see below); a fault opens it on its own,
+once. Clicking the widget again, clicking elsewhere on the page, or pressing Escape puts it away —
+the red badge goes on reporting the fault, and the same fault does not force the panel back open.
 
 The widget follows the shadcn/ui neutral look (Inter, lucide-style icons) so it blends into
 shadcn-based host applications. It is **not** a softphone: all call control (dial, answer, hangup,
@@ -73,7 +74,7 @@ Signaling  ✓ WSS · expires in 4:12                    ›
 Microphone ✓ MacBook Pro Microphone              ▁▃▅▇
 TURN       ⚠ Not configured
 ──────────────────────────────────────────────────────
-Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.6
+Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.7
 ```
 
 - **Signaling** merges SIP registration and WebSocket — in SIP over WebSocket they cannot disagree —
@@ -98,7 +99,7 @@ Options. The page pushes a pre-hashed credential in; the extension answers with 
 only.
 
 **Presence marker.** On injection into an Allow Site page the content script sets
-`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.6"`),
+`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.7"`),
 synchronously, before the page's own scripts run. It is set only on Allow Site pages and only in
 the top frame, so it is the page's first-pass test for "the extension is installed *and* this site
 is allowed". Removing the site from Allow Sites (or revoking its host permission) removes the marker

@@ -976,8 +976,12 @@ red, carries a check/warning/x shape as well as colour, and states the failure i
 rest of the panel (extension identity, the healthy signals) stays on screen, because "which
 extension is this?" is exactly the question a fault raises.
 
-The panel stays open for as long as the fault lasts: clicking the button does not collapse it, and
-it closes by itself once the fault clears. A fault is dismissed by fixing it, not by hiding it.
+A fault expands the panel once. The user can collapse it again from the button, by clicking
+elsewhere on the page, or with Escape; the fault then goes on being reported by the red dot on the
+button. The panel also closes by itself once the fault clears. The same fault never forces itself
+back on screen — its later retry attempts are the same news, not new news. Only a change of fault
+identity (a different error, or a different reason phrase from the server) or the same fault
+recurring after it cleared earns another auto-expand.
 
 Fault copy is one line, in the form *what failed (why) — what to do*:
 
