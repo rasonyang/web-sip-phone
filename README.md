@@ -300,7 +300,7 @@ plain regeneration reproduces the same bytes).
 
 ## Test coverage
 
-`npm test` runs 27 files / 485 tests: unit tests (header parsing, the call state machine, the
+`npm test` runs 27 files / 492 tests: unit tests (header parsing, the call state machine, the
 ringtone player, Allow Site matching, multiple-call rejection, error priority, the page-facing
 provisioning bridge, content-script teardown and replacement after an extension reload, and the microphone permission watcher and gate) plus integration
 tests against a mock SIP transport that exercise design.md §22.2 items 1–12 end to end (REGISTER
