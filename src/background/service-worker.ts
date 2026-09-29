@@ -626,11 +626,14 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
         if (provisioned && !config.allowSites.includes(new URL(provisioned.origin).hostname)) {
           await dropProvisioned();
         }
-        // Sign Out clears everything, not just the half the user can see. Options clears the
-        // account (and the override with it); a held provisioned credential left behind would
-        // re-register the moment this evaluation ran, which reads as "sign out did nothing".
-        // Only the transition counts: booting with no account is not a sign-out.
-        if (previous.account !== null && config.account === null && !config.manualOverride) {
+        // Sign Out clears everything, not just the half the user can see. The provisioned
+        // credential lives in session storage, not in `config.account`, so no config diff can
+        // reveal a sign-out (with no manual account the account is null before and after):
+        // Options says so explicitly with `signOut`, and only that flag drops it. An ordinary
+        // save must never cost the phone its credential. Dropped at once, mid-call included,
+        // like a deprovision or an Allow Sites removal: the user asked for this, and evaluate()
+        // still defers the runtime teardown to hang-up, so a live call is not cut.
+        if (msg.signOut === true) {
           clearProvisionGrace();
           provisionFault = null;
           await dropProvisioned();

@@ -1149,10 +1149,10 @@ describe("host-page provisioning", () => {
     await vi.waitFor(() => expect(starts().length).toBe(1));
     fake.sentRuntimeMessages.length = 0;
 
-    // What clearAccount() writes, followed by the config/changed it already sends. The Allow
+    // What clearAccount() writes, followed by the sign-out notice Options sends. The Allow
     // Site tab stays open, so the last-tab rule cannot account for the credential going away.
     seedConfig({ account: null, allowSites: [SITE], manualOverride: false });
-    fire({ type: "config/changed" }, {});
+    fire({ type: "config/changed", signOut: true }, {});
 
     await vi.waitFor(() => {
       expect(fake._sessionData["websipphone.provisioned"]).toBeUndefined();
@@ -1165,6 +1165,81 @@ describe("host-page provisioning", () => {
       provisionedAccount: null,
       provisionFault: null,
       manualOverride: false
+    });
+  });
+
+  it("26a. Sign Out drops a provisioned credential when there was no manual account (#13)", async () => {
+    await bootWithTab();
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    fake.sentRuntimeMessages.length = 0;
+
+    // clearAccount() on an already-empty config: account stays null, nothing else changes.
+    seedConfig({ account: null, allowSites: [SITE], manualOverride: false });
+    fire({ type: "config/changed", signOut: true }, {});
+
+    await vi.waitFor(() => {
+      expect(fake._sessionData["websipphone.provisioned"]).toBeUndefined();
+      expect(runtimeTypes()).toEqual(["runtime/stop"]);
+      expect(fake._offscreenOpen).toBe(false);
+    });
+    expect(lastOptionsState().details).toMatchObject({
+      credentialSource: "NONE",
+      provisionStatus: "NONE",
+      provisionedAccount: null,
+      manualOverride: false
+    });
+    expect(lastTabState().details).toMatchObject({ credentialSource: "NONE", provisionStatus: "NONE" });
+  });
+
+  it("26b. Sign Out with a manual account, a held credential and manualOverride leaves nothing registered", async () => {
+    await bootWithTab(ACCOUNT, { manualOverride: true });
+    provision();
+    await vi.waitFor(() => expect(fake._sessionData["websipphone.provisioned"]).toBeDefined());
+    fake.sentRuntimeMessages.length = 0;
+
+    seedConfig({ account: null, allowSites: [SITE], manualOverride: false });
+    fire({ type: "config/changed", signOut: true }, {});
+
+    await vi.waitFor(() => {
+      expect(fake._sessionData["websipphone.provisioned"]).toBeUndefined();
+      expect(fake._offscreenOpen).toBe(false);
+    });
+    expect(lastOptionsState().details).toMatchObject({ credentialSource: "NONE", provisionStatus: "NONE", manualOverride: false });
+  });
+
+  it("26c. an unrelated config save while provisioned does not drop the credential", async () => {
+    await bootWithTab();
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    fake.sentRuntimeMessages.length = 0;
+
+    // No signOut flag: an incidental write (here, TURN cleared and the dot moved) is not a sign-out,
+    // even though the manual account was already null.
+    seedConfig({ account: null, allowSites: [SITE], turn: null, dotPosition: { x: 5, y: 5 } });
+    fire({ type: "config/changed" }, {});
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(fake._sessionData["websipphone.provisioned"]).toBeDefined();
+    expect(runtimeTypes()).toEqual([]);
+    expect(lastOptionsState().details).toMatchObject({ credentialSource: "PROVISIONED", provisionStatus: "ACTIVE" });
+  });
+
+  it("26d. after Sign Out the next provision is accepted", async () => {
+    await bootWithTab();
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    seedConfig({ account: null, allowSites: [SITE], manualOverride: false });
+    fire({ type: "config/changed", signOut: true }, {});
+    await vi.waitFor(() => expect(fake._sessionData["websipphone.provisioned"]).toBeUndefined());
+    fake.sentRuntimeMessages.length = 0;
+
+    provision({ ...PROV, account: "2002" });
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    expect(lastOptionsState().details).toMatchObject({
+      credentialSource: "PROVISIONED",
+      provisionStatus: "ACTIVE",
+      provisionedAccount: "2002"
     });
   });
 
