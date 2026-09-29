@@ -46,6 +46,7 @@ section p { font-size: 13px; line-height: 1.5; }
   --n-radius: 8px;
 }
 #acc-provisioned.banner { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--n-fg); background: var(--n-card); border: 1px solid var(--n-border); border-radius: var(--n-radius); padding: 10px 12px; margin: 10px 0; }
+#acc-provisioned.banner[hidden] { display: none; }
 #acc-provisioned.banner.warning { background: var(--n-warn-bg); border-color: var(--n-warn-border); color: var(--n-warn-fg); }
 #acc-provisioned .banner-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 #acc-provisioned .banner-text { line-height: 1.5; }
@@ -61,6 +62,7 @@ section p { font-size: 13px; line-height: 1.5; }
 #acc-manual > summary .chev { flex: none; transition: transform 0.15s ease; }
 #acc-manual[open] > summary .chev { transform: rotate(90deg); }
 #acc-manual .warn-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--n-warn-fg); }
+#acc-manual .warn-badge[hidden] { display: none; }
 #acc-manual-body { padding: 0 12px; }
 #acc-manual-body label { font-size: 13px; }
 #acc-manual-actions { margin: 0; padding: 0 12px 12px; }
