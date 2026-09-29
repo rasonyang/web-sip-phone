@@ -74,7 +74,7 @@ Signaling  ✓ WSS · expires in 4:12                    ›
 Microphone ✓ MacBook Pro Microphone              ▁▃▅▇
 TURN       ⚠ Not configured
 ──────────────────────────────────────────────────────
-Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.7
+Reconnect  Test microphone  Copy diagnostics  Settings  v1.0.8
 ```
 
 - **Signaling** merges SIP registration and WebSocket — in SIP over WebSocket they cannot disagree —
@@ -99,7 +99,7 @@ Options. The page pushes a pre-hashed credential in; the extension answers with 
 only.
 
 **Presence marker.** On injection into an Allow Site page the content script sets
-`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.7"`),
+`document.documentElement.dataset.webSipPhone` to the extension version (e.g. `"1.0.8"`),
 synchronously, before the page's own scripts run. It is set only on Allow Site pages and only in
 the top frame, so it is the page's first-pass test for "the extension is installed *and* this site
 is allowed". Removing the site from Allow Sites (or revoking its host permission) removes the marker
@@ -156,7 +156,8 @@ page may treat any `state` it sees as authoritative. It never contains `a1Hash`.
 
 **Precedence.** A provisioned credential wins by default: it replaces a manual registration for as
 long as it is held, and a manual account that merely predates the provision never blocks it. It is
-cleared on `deprovision`, when `expiresAt` passes, or when the last Allow Site tab closes — and the
+cleared on `deprovision`, when `expiresAt` passes, or when no Allow Site tab is open and no call is in progress (a tab that closes
+mid-call and comes back before hang-up keeps it) — and the
 extension then falls back to the manual account if one is configured, or unregisters if not.
 
 The one exception is a deliberate override. Saving a manual account in Options *while a credential
@@ -300,7 +301,7 @@ plain regeneration reproduces the same bytes).
 
 ## Test coverage
 
-`npm test` runs 27 files / 492 tests: unit tests (header parsing, the call state machine, the
+`npm test` runs 27 files / 499 tests: unit tests (header parsing, the call state machine, the
 ringtone player, Allow Site matching, multiple-call rejection, error priority, the page-facing
 provisioning bridge, content-script teardown and replacement after an extension reload, and the microphone permission watcher and gate) plus integration
 tests against a mock SIP transport that exercise design.md §22.2 items 1–12 end to end (REGISTER

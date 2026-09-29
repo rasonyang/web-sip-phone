@@ -65,6 +65,10 @@ local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, v
   unregistered if there is none. A call already in progress is not cut off — teardown still waits
   for the call to end, per the runtime lifetime rule — but the page must provision again (after the
   site is added back) to register with that credential a second time.
+- **A provisioned credential outlives its last Allow Site tab until the call ends.** The credential
+  is dropped when no Allow Site tab is open *and* no call is in progress, the same moment the
+  runtime is torn down. A tab that closes mid-call and comes back before hang-up therefore keeps
+  it; with no tab back at hang-up the page must provision again after its `hello`.
 - **A provisioned credential's `expiresAt` may be observed late.** Expiry is enforced by a service
   worker timer plus a check on every state evaluation, but MV3 does not guarantee timers: the
   service worker can be terminated before the timer fires, and the timer dies with it. Expiry is

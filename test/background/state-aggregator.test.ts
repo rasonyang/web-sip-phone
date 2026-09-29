@@ -41,8 +41,8 @@ describe("computeDisplayState", () => {
     expect(s.busy).toBe(true);
   });
   it("reports the live call, not UNCONFIGURED, when the credential is dropped mid-call", () => {
-    // A provisioned-only credential is dropped the moment its last Allow Site tab closes, so
-    // `configured` can go false while the runtime is still carrying the call it must not drop.
+    // A provisioned-only credential can be revoked mid-call (its site removed from Allow Sites),
+    // so `configured` can go false while the runtime is still carrying the call it must not drop.
     const s = computeDisplayState({
       configured: false,
       allowTabCount: 0,
@@ -51,6 +51,27 @@ describe("computeDisplayState", () => {
     expect(s.busy).toBe(true);
     expect(s.runtime).not.toBe(RuntimeState.Unconfigured);
     expect(s.runtime).toBe(RuntimeState.Ready);
+  });
+
+  describe("microphone across a teardown", () => {
+    const run = (offscreen: OffscreenStatus | null, lastMeasuredMic?: "ok" | "blocked" | null) =>
+      computeDisplayState({ configured: true, allowTabCount: 1, offscreen, lastMeasuredMic }).link.microphone;
+
+    it("keeps the last measured value when no runtime reports one", () => {
+      expect(run(null, "ok")).toBe("ok");
+      expect(run(null, "blocked")).toBe("blocked");
+    });
+    it("uses it for a fresh runtime that has not measured yet", () => {
+      expect(run({ ...base, link: { ...IDLE_LINK, microphone: "unknown" } }, "ok")).toBe("ok");
+    });
+    it("a live measurement always wins", () => {
+      expect(run({ ...base, link: { ...IDLE_LINK, microphone: "blocked" } }, "ok")).toBe("blocked");
+      expect(run({ ...base, link: { ...IDLE_LINK, microphone: "ok" } }, "blocked")).toBe("ok");
+    });
+    it("stays unknown when nothing was ever measured", () => {
+      expect(run(null, null)).toBe("unknown");
+      expect(run(null)).toBe("unknown");
+    });
   });
 
   it("CONNECTING while offscreen not yet reporting", () => {
