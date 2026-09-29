@@ -40,10 +40,20 @@ export function computeDisplayState(input: {
   configured: boolean;
   allowTabCount: number;
   offscreen: OffscreenStatus | null;
+  /**
+   * The last microphone value a runtime measured ("ok" | "blocked"), or null if none has yet.
+   * Used only where the runtime reports nothing better: no runtime at all (torn down), or a
+   * freshly started one whose gate has not run and so says "unknown". A live measurement wins.
+   */
+  lastMeasuredMic?: "ok" | "blocked" | null;
   identity?: Identity;
 }): DisplayState {
-  const { configured, allowTabCount, offscreen, identity } = input;
-  const link = offscreen?.link ?? IDLE_LINK;
+  const { configured, allowTabCount, offscreen, identity, lastMeasuredMic } = input;
+  const reported = offscreen?.link ?? IDLE_LINK;
+  // "Unknown" from a host's point of view means "permission not settled" and triggers its
+  // setup card, so it must not be what a teardown or a restart in between measurements says.
+  const link =
+    reported.microphone === "unknown" && lastMeasuredMic ? { ...reported, microphone: lastMeasuredMic } : reported;
   const reconnecting = offscreen?.reconnecting ?? false;
   const busy = offscreen?.callInProgress ?? false;
 
@@ -70,9 +80,9 @@ export function computeDisplayState(input: {
   };
 
   // Not while a call is in progress, for the same reason as the tab check below: `configured`
-  // can go false mid-call (a provisioned-only credential is dropped when its last Allow Site
-  // tab closes) while the runtime keeps carrying the call, and "unconfigured, not busy" would
-  // report that call as not happening.
+  // can go false mid-call (a provisioned-only credential can be revoked, e.g. its site removed
+  // from Allow Sites, while the runtime keeps carrying the call), and "unconfigured, not busy"
+  // would report that call as not happening.
   if (!configured && !busy) {
     return { runtime: RuntimeState.Unconfigured, error: null, reconnecting: false, busy: false, link, details };
   }

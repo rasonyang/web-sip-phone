@@ -243,7 +243,8 @@ Registration is allowed only when at least one Allow Site tab exists.
 The Account section has two credential sources. **Manual** credentials are typed into Options and
 stored in `chrome.storage.local`. **Provisioned** credentials are pushed by an Allow Site page over
 the host-page provisioning protocol, held in `chrome.storage.session` only, never persisted beyond
-the browser session, and dropped when `expiresAt` passes. Which source is *applied* follows the
+the browser session, and dropped when `expiresAt` passes or when no Allow Site tab is open and no call
+is in progress (§6.5). Which source is *applied* follows the
 precedence rules below; what is *held* is always shown.
 
 | State | Condition | Banner | Credential inputs | Always visible |
@@ -487,6 +488,12 @@ Consequences that are deliberate:
   event at all) — leaves the call up. Teardown is deferred, not cancelled: every call-state change
   broadcasts a status, and that broadcast re-evaluates the rule, so the runtime is destroyed as
   soon as the call ends.
+* A provisioned credential follows the same clock: it is dropped when no Allow Site tab is open
+  **and** no call is in progress, not the instant the last tab closes. A tab that reopens before
+  hang-up therefore keeps the credential and the runtime, and the phone is not recycled at the
+  end of the call. (Expiry, `deprovision` and removing the site from Allow Sites stay immediate.)
+* The link's `microphone` survives a teardown: the worker remembers the last measured value
+  ("ok"/"blocked") and reports it whenever no runtime reports one, until a new measurement.
 * A call can therefore be in progress with no visible Web SIP Phone UI anywhere. This is accepted:
   call control belongs to FreeSWITCH, not to the browser, so an invisible call is still a
   correctly controlled one.

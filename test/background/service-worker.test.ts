@@ -682,6 +682,84 @@ describe("host-page provisioning", () => {
     expect(lastStart().config).toMatchObject({ sipUri: "sip:1001@voice.example.com", credentialSource: "manual" });
   });
 
+  it("7b. a tab that comes back mid-call keeps the credential, and hang-up does not recycle the runtime", async () => {
+    await bootWithTab(ACCOUNT);
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: true }), {}, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    fake.sentRuntimeMessages.length = 0;
+
+    fake._closeTab(1);
+    await new Promise((r) => setTimeout(r, 10));
+    // The call keeps the runtime, and the credential is still held while it does.
+    expect(fake._sessionData["websipphone.provisioned"]).toBeDefined();
+    expect(runtimeTypes()).not.toContain("runtime/stop");
+
+    fake._openTab(1, "https://crm.example.com/app");
+    await new Promise((r) => setTimeout(r, 10));
+    fake.sentRuntimeMessages.length = 0;
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: false }), {}, () => {});
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(runtimeTypes()).toEqual([]);
+    expect(fake._offscreenOpen).toBe(true);
+    expect(fake._sessionData["websipphone.provisioned"]).toBeDefined();
+    expect(lastTabState().details.provisionStatus).toBe("ACTIVE");
+    expect(lastTabState().details.credentialSource).toBe("PROVISIONED");
+  });
+
+  it("7c. with no tab back at hang-up, the credential is dropped and the runtime torn down then", async () => {
+    await bootWithTab(ACCOUNT);
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: true }), {}, () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    fake.sentRuntimeMessages.length = 0;
+
+    fake._closeTab(1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fake._sessionData["websipphone.provisioned"]).toBeDefined();
+    expect(fake._offscreenOpen).toBe(true);
+
+    fake.runtime.onMessage.fire(offscreenStatus({ callInProgress: false }), {}, () => {});
+    await vi.waitFor(() => {
+      expect(fake._sessionData["websipphone.provisioned"]).toBeUndefined();
+      expect(runtimeTypes()).toContain("runtime/stop");
+      expect(fake._offscreenOpen).toBe(false);
+    });
+  });
+
+  it("7d. the teardown broadcast keeps the last measured microphone", async () => {
+    await bootWithTab(ACCOUNT);
+    const mic = () => lastOptionsState().link.microphone;
+    const status = (microphone: string, extra: Record<string, unknown> = {}) => {
+      const m = offscreenStatus(extra) as unknown as { status: { link: Record<string, string> } };
+      m.status.link.microphone = microphone;
+      fake.runtime.onMessage.fire(m, {}, () => {});
+    };
+
+    status("ok");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mic()).toBe("ok");
+
+    fake._closeTab(1); // no call: torn down, offscreenStatus becomes null
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(false));
+    expect(mic()).toBe("ok");
+
+    // A fresh runtime that has not measured yet does not erase it either...
+    fake._openTab(1, "https://crm.example.com/app");
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
+    status("unknown", { phase: "connecting" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mic()).toBe("ok");
+
+    // ...but a new measurement wins immediately.
+    status("blocked", { errors: ["MICROPHONE_BLOCKED"] });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mic()).toBe("blocked");
+  });
+
   it("8. a manual edit made while provisioned is deferred, not applied", async () => {
     await bootWithTab(ACCOUNT);
     provision();

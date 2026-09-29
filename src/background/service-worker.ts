@@ -31,6 +31,15 @@ const PROVISION_GRACE_MS = 10_000;
 let config: WebSipPhoneConfig;
 let tracker: TabTracker;
 let offscreenStatus: OffscreenStatus | null = null;
+/**
+ * The last microphone value the offscreen runtime actually measured ("ok" or "blocked"; never
+ * "unknown"). Teardown nulls `offscreenStatus`, and a fresh runtime reports "unknown" until its
+ * gate has run; without this the link would flash "unknown" — which hosts read as "set up your
+ * phone" — at every recycle although the permission did not change. Worker memory only: after
+ * an MV3 worker restart the next runtime measures again within a moment, so persisting it
+ * would buy little.
+ */
+let lastMeasuredMic: "ok" | "blocked" | null = null;
 let runtimeStarted = false;
 /** Fingerprint of the config the runtime was started with; detects account/TURN edits while running. */
 let runtimeConfigKey: string | null = null;
@@ -161,6 +170,7 @@ function displayState() {
     configured: applied !== "NONE",
     allowTabCount: tracker.count(),
     offscreen: offscreenStatus,
+    lastMeasuredMic,
     identity: {
       account: live ? live.account : usesProvisioned ? provisioned!.account : (config.account?.username ?? null),
       domain: live ? live.domain : usesProvisioned ? provisioned!.sipDomain : (config.account?.domain ?? null),
@@ -319,10 +329,16 @@ function evaluate(): Promise<void> {
       }
       // A provisioned credential belongs to the host page that pushed it. With no Allow Site
       // tab left open at all — not merely none on the provisioning site — there is nobody left
-      // to own it, so it is dropped here even though the runtime teardown below still waits
-      // for `!callActive()`. (Removing the provisioning site from Allow Sites revokes the
-      // credential too; that is handled in the `config/changed` case, where the list changes.)
-      if (tracker.count() === 0 && provisioned) {
+      // to own it, so it is dropped. That happens at the same moment the runtime teardown below
+      // would (`!callActive()`), not earlier: dropping it the instant the last tab closes meant
+      // a tab that reopened before hang-up found no credential, so the call's end tore the
+      // runtime down and the phone deregistered and re-minted. Deferred, not cancelled: every
+      // call-state change reports a status that re-evaluates, so with still no tab the drop
+      // runs the moment the call ends, and a tab that came back keeps both credential and
+      // runtime. (While deferred, the credential is still held, and displayState() says so.)
+      // Removing the provisioning site from Allow Sites revokes the credential immediately —
+      // that is not about tab ownership and is handled in the `config/changed` case.
+      if (tracker.count() === 0 && !callActive() && provisioned) {
         await dropProvisioned();
       }
       // Same reasoning as the expiry check above: the grace window's deadline is enforced here
@@ -525,6 +541,10 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
   switch (msg.type) {
     case "offscreen/status":
       offscreenStatus = msg.status;
+      // A new measurement, "ok" or "blocked", always wins at once; "unknown" never overwrites.
+      if (msg.status.link.microphone !== "unknown") {
+        lastMeasuredMic = msg.status.link.microphone;
+      }
       if (msg.status.phase === "stopped" && !msg.status.errors.includes("MICROPHONE_BLOCKED")) {
         // The runtime stops itself when the microphone gate fails at start (design §6.1) and
         // the worker would otherwise keep believing it is running. Once that blocker clears —
