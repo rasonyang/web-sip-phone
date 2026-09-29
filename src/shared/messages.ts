@@ -61,7 +61,9 @@ export type Msg =
   | { target: "background"; type: "ui/savePosition"; pos: DotPosition }
   | { target: "background"; type: "ui/testMic" }
   | { target: "background"; type: "ui/panelState"; open: boolean }
-  | { target: "background"; type: "config/changed" }
+  // `signOut` is set only by Options' Sign Out / Clear Account: it also drops the held
+  // provisioned credential, which no config diff can show (it is not in `config.account`).
+  | { target: "background"; type: "config/changed"; signOut?: boolean }
   // Options "Re-sync": re-broadcast state to every Allow Site tab so host pages re-evaluate
   // whether to provision, and restart the provisioning grace window.
   | { target: "background"; type: "ui/resync" }

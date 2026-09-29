@@ -280,7 +280,13 @@ stay at the top level and are never hidden by it.
 * Clear override unsets `manualOverride`; the manual account stays stored and the provisioned
   credential is applied again.
 * Sign Out / Clear Account clears the manual account, TURN, `manualOverride`, **and** the held
-  provisioned credential. The extension unregisters until a page provisions again.
+  provisioned credential. The extension unregisters until a page provisions again. The provisioned
+  credential lives in session storage, not in the manual account, so no config diff can reveal a
+  sign-out: Options sends `config/changed` with `signOut: true`, and only that flag drops the
+  credential (an ordinary save never does), whether or not a manual account existed. The drop is
+  immediate like deprovision and Allow Sites removal, including mid-call; the runtime teardown
+  still waits for hang-up (§6.5), so a live call is not cut. Allow Site pages then see
+  `credentialSource: NONE` and may provision again.
 * Re-sync re-broadcasts the current state to every Allow Site tab so the host page can decide to
   provision again, and restarts the grace window. It does not pull anything itself.
 * Provisioned values are never written into an editable input: they are shown read-only or not at
@@ -1448,8 +1454,8 @@ Automated acceptance for the Account section:
   by an incoming provision; `page/hello` with no provision within 10 s yields
   `provisionFault NOT_RECEIVED`; an invalid provision yields `INVALID`; an accepted provision clears
   the fault and sets `provisionLastSyncAt`; `ui/resync` re-broadcasts state to every Allow Site tab
-  and restarts the grace window; Sign Out (account cleared + `config/changed`) drops the held
-  provision.
+  and restarts the grace window; Sign Out (account cleared + `config/changed` with `signOut`) drops the held
+  provision even with no manual account, while a plain `config/changed` never does.
 
 ## 22.3 FreeSWITCH Live Acceptance
 

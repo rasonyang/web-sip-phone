@@ -515,7 +515,7 @@ describe("account section — status line is never hidden", () => {
     expect(fake._localData[OVERRIDE_KEY]).toBe(false);
     expect($<HTMLInputElement>("acc-server").value).toBe("");
     expect($("acc-status").textContent).toBe("Account and credentials cleared.");
-    expect(fake.sentRuntimeMessages).toContainEqual({ target: "background", type: "config/changed" });
+    expect(fake.sentRuntimeMessages).toContainEqual({ target: "background", type: "config/changed", signOut: true });
   });
 });
 

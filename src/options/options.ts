@@ -1,6 +1,6 @@
 import { clearAccount, loadConfig, saveConfig } from "../background/config-store.js";
 import type { AccountConfig } from "../shared/config.js";
-import { isMsg, type TabState } from "../shared/messages.js";
+import { isMsg, type Msg, type TabState } from "../shared/messages.js";
 import { EMPTY_DETAILS, IDLE_LINK, RuntimeState, type DisplayState } from "../shared/state.js";
 import { allowSiteInputError, normalizeHostname, originPatterns } from "../shared/allow-sites.js";
 import { parseServerAddress, serverWarningText } from "../shared/server-address.js";
@@ -30,8 +30,11 @@ function setSiteStatus(text: string): void {
   $("site-status").textContent = text;
 }
 
-function notifyConfigChanged(): void {
-  void chrome.runtime.sendMessage({ target: "background", type: "config/changed" }).catch(() => {});
+function notifyConfigChanged(signOut = false): void {
+  const msg: Msg = signOut
+    ? { target: "background", type: "config/changed", signOut: true }
+    : { target: "background", type: "config/changed" };
+  void chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
 // ---- section switching ----
@@ -421,7 +424,7 @@ function wireAccount(): void {
       storedAccount = null;
       fillManualForm();
       setAccountStatus("Account and credentials cleared.");
-      notifyConfigChanged();
+      notifyConfigChanged(true);
     })();
   });
 
