@@ -1195,10 +1195,10 @@ Keep all errors in the diagnostic log.
 
 # 17. Microphone and Audio
 
-Open the Options page after first install and guide the user to:
+Open the Options page at Allow Sites after first install and guide the user to:
 
-1. Enter the account.
-2. Configure an Allow Site.
+1. Configure an Allow Site (nothing registers until one is allowed; the account may be provisioned by the host page).
+2. Enter the account, unless it is provisioned.
 3. Grant microphone permission.
 4. Complete a simple microphone test.
 5. Save.

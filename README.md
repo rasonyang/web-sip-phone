@@ -36,7 +36,7 @@ the page's own softphone bar owns all call-facing UI. SIP support comes from a
 
 ## Load unpacked
 1. chrome://extensions → enable Developer mode → Load unpacked → select `dist/`.
-2. The options page opens on first install.
+2. The options page opens on first install, at Allow Sites.
 
 ## FreeSWITCH prerequisites
 See docs/FREESWITCH.md: a WebSocket binding in the verto/sofia profile — `wss-binding` plus TLS
