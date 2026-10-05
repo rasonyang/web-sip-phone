@@ -6,7 +6,7 @@ changes, change it here in the same commit.
 
 - **Category:** Workflow & Planning
 - **Language:** English
-- **Version:** 1.0.9
+- **Version:** 1.0.10
 - **Privacy policy URL:** https://github.com/rasonyang/web-sip-phone/blob/main/PRIVACY.md
 - **Support URL:** https://github.com/rasonyang/web-sip-phone/issues
 
