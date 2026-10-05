@@ -373,10 +373,11 @@ describe("content script + install", () => {
     });
   });
 
-  it("opens options page on first install", async () => {
+  it("opens options page at Allow Sites on first install", async () => {
     await boot({});
     fake.runtime.onInstalled.fire({ reason: "install" });
     await vi.waitFor(() => expect(fake.optionsOpened).toBe(1));
+    expect(fake._sessionData["websipphone.openSection"]).toBe("sites");
   });
 
   it("registers the content script for the top frame only, with no stylesheet", async () => {

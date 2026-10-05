@@ -727,7 +727,11 @@ async function doInit(): Promise<void> {
   // for by the end of its first turn, and onInstalled is dispatched once, right after startup.
   chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === "install") {
-      void chrome.runtime.openOptionsPage();
+      // First run lands on Allow Sites: nothing registers until a site is allowed, while the
+      // account may still arrive by provisioning from the host page.
+      void Promise.resolve(chrome.storage.session.set({ [OPEN_SECTION_KEY]: "sites" }))
+        .catch(() => {})
+        .then(() => chrome.runtime.openOptionsPage());
     }
     if (details.reason === "install" || details.reason === "update") {
       // Open Allow Site tabs get the new content script now; after an update their old one is
