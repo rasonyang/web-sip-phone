@@ -1,10 +1,14 @@
 import type { DotPosition, StoredDotPosition } from "../shared/config.js";
-import { isMsg, type Msg, type TabState } from "../shared/messages.js";
+import { isHelloDeclined, isMsg, type Msg, type TabState } from "../shared/messages.js";
 import { RuntimeState, type DisplayState } from "../shared/state.js";
 import { applyPosition, clampPixels, positionFromPixels } from "./drag.js";
 import { PageBridge } from "./page-bridge.js";
 import { createRuntimeGuard } from "./runtime-guard.js";
 import { WebSipPhoneView, type UiIntent } from "./view.js";
+
+function isTabState(reply: unknown): reply is TabState {
+  return typeof reply === "object" && reply !== null && "state" in reply;
+}
 
 export const HOST_ID = "web-sip-phone-host";
 /**
@@ -107,15 +111,18 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
     version,
     extensionId,
     send,
-    // `undefined` and "no answer" must stay distinguishable: an explicit `undefined` reply is the
-    // worker declining (this site is no longer allowed) and tears the bridge down, while a failed
-    // sendMessage is only a sleeping or missing worker and is reported as `null`.
+    // Only the worker's explicit `{ declined: true }` is a decline and tears the bridge down. An
+    // empty reply, a failed sendMessage, or anything else unrecognised is "no answer" (`null`):
+    // a worker that is asleep, or just woke without a listener yet, says nothing about the site.
     request: async (m) => {
       const answer = await guard.request(m);
-      if (answer === null) {
+      if (answer === null || answer.reply === undefined || answer.reply === null) {
         return null;
       }
-      return answer.reply === undefined ? undefined : (answer.reply as TabState);
+      if (isHelloDeclined(answer.reply)) {
+        return "declined";
+      }
+      return isTabState(answer.reply) ? answer.reply : null;
     },
     alive: () => guard.alive(),
     // Declined means this site was removed from Allow Sites: the widget goes with the marker.
@@ -345,8 +352,8 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
       if (gotState || disposed) {
         return;
       }
-      if (answer?.reply) {
-        applyTabState(answer.reply as TabState);
+      if (isTabState(answer?.reply)) {
+        applyTabState(answer.reply);
       } else {
         scheduleInitialStateRetry(attempt);
       }

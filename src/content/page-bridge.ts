@@ -19,11 +19,12 @@ export interface PageBridgeEnv {
   send: (msg: Msg) => void;
   /**
    * Ask the service worker for the current tab state. Three outcomes, and the difference
-   * matters: a `TabState` is state to publish, `undefined` is an explicit decline (the worker
-   * answered and refused — this site is no longer an Allow Site), and `null` is no answer at
-   * all (worker asleep or unreachable), which says nothing about whether the site is allowed.
+   * matters: a `TabState` is state to publish, `"declined"` is the worker's explicit refusal
+   * (it answered `{ declined: true }` — this site is no longer an Allow Site), and `null` is no
+   * answer at all (worker asleep, unreachable, or an empty or unrecognised reply), which says
+   * nothing about whether the site is allowed.
    */
-  request: (msg: Msg) => Promise<TabState | null | undefined>;
+  request: (msg: Msg) => Promise<TabState | null | "declined">;
   /**
    * False once the extension context behind this content script is gone (reload, update,
    * disable). Checked before answering anything: an orphaned script would otherwise reply to a
@@ -156,7 +157,7 @@ export class PageBridge {
     if (!this.listening) {
       return; // detached while the worker was answering (replaced, or the context went away)
     }
-    if (ts === undefined) {
+    if (ts === "declined") {
       if (this.env.onDeclined) {
         this.env.onDeclined();
       } else {

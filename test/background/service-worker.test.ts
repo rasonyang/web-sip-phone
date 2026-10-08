@@ -794,7 +794,42 @@ describe("host-page provisioning", () => {
     let denied: unknown = "unset";
     fire({ type: "page/hello" }, { tab: { id: 2, url: "https://evil.example/" } }, (r) => (denied = r));
     await vi.waitFor(() => expect(denied).not.toBe("unset"));
-    expect(denied).toBeUndefined();
+    expect(denied).toEqual({ declined: true });
+  });
+
+  it("9b. a hello that wakes a cold worker waits for the config and is answered, never declined", async () => {
+    seedConfig({ account: null, allowSites: [SITE] });
+    let release!: () => void;
+    fake._storageGate = new Promise<void>((resolve) => (release = resolve));
+    const mod = await import("../../src/background/service-worker.js");
+    const init = mod.initServiceWorker();
+    // Registered in the first turn, before any storage read has resolved.
+    expect(fake.runtime.onMessage.listeners).toHaveLength(1);
+    expect(fake.tabs.onRemoved.listeners).toHaveLength(1);
+
+    const replies: unknown[] = [];
+    fire({ type: "page/hello" }, SITE_SENDER, (r) => replies.push(r));
+    fire({ type: "page/hello" }, { tab: { id: 2, url: "https://evil.example/" } }, (r) => replies.push(r));
+    await settle();
+    expect(replies).toEqual([]); // held, not declined
+
+    fake._storageGate = null;
+    release();
+    await init;
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    expect((replies[0] as { state: DisplayState }).state).toBeDefined();
+    expect(replies[1]).toEqual({ declined: true });
+  });
+
+  it("9c. a site not in Allow Sites, a sub-frame and a prerendered document are declined", async () => {
+    await bootWithTab();
+    const replies: unknown[] = [];
+    const respond = (r: unknown) => replies.push(r);
+    fire({ type: "page/hello" }, { tab: { id: 3, url: "https://other.example/" }, frameId: 0 }, respond);
+    fire({ type: "page/hello" }, { ...SITE_SENDER, frameId: 3 }, respond);
+    fire({ type: "page/hello" }, { ...SITE_SENDER, documentLifecycle: "prerender" }, respond);
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    expect(replies).toEqual([{ declined: true }, { declined: true }, { declined: true }]);
   });
 
   it("10. the a1Hash never reaches a broadcast", async () => {

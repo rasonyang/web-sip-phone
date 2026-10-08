@@ -1,6 +1,6 @@
 import { originPatterns, urlMatchesAllowSite } from "../shared/allow-sites.js";
 import { deriveEndpoints, iceServers, isAccountComplete, type WebSipPhoneConfig } from "../shared/config.js";
-import { isMsg, type Msg, type OffscreenStatus, type RuntimeConfig, type TabState } from "../shared/messages.js";
+import { isMsg, type HelloReply, type Msg, type OffscreenStatus, type RuntimeConfig, type TabState } from "../shared/messages.js";
 import { parseProvisionRequest } from "../shared/page-protocol.js";
 import type { CredentialSource, ProvisionFault, ProvisionStatus } from "../shared/state.js";
 import { computeDisplayState } from "./state-aggregator.js";
@@ -659,9 +659,11 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
     case "page/hello": {
       // Answered with the same payload a content script gets on load, so a host page can
       // read registration state before deciding whether to provision. An unallowed sender
-      // gets `undefined` — never a hint about what is configured.
+      // gets the bare decline marker — never a hint about what is configured. It is explicit
+      // because the content script treats an empty reply as "no answer" (a worker that woke
+      // without a listener), not as a refusal.
       const helloUrl = pageSenderUrl(sender);
-      sendResponse(helloUrl !== null ? tabState() : undefined);
+      sendResponse(helloUrl !== null ? tabState() : ({ declined: true } satisfies HelloReply));
       // A page that says hello with nothing held is expected to provision. Give it the grace
       // window, once: a second hello (a reload, a second tab, or the same page again — the
       // content script forwards every hello, cached state or not) must not keep resetting the
@@ -719,6 +721,16 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
 }
 
 let initPromise: Promise<void> | null = null;
+/**
+ * Settles once `config`, `provisioned` and `tracker` exist and the tracker has scanned the open
+ * tabs: what a message handler needs before it may read them. Deliberately earlier than the end
+ * of doInit — the content-script sync and first evaluate() can touch the offscreen document,
+ * and a hello must not wait on that.
+ */
+let markReady!: () => void;
+const ready = new Promise<void>((resolve) => {
+  markReady = resolve;
+});
 
 /** Idempotent: the top-level call and any test/wake-up call share one initialization. */
 export function initServiceWorker(): Promise<void> {
@@ -728,6 +740,9 @@ export function initServiceWorker(): Promise<void> {
 async function doInit(): Promise<void> {
   // Registered before the first await: an MV3 worker only receives the events it has a listener
   // for by the end of its first turn, and onInstalled is dispatched once, right after startup.
+  // That holds for onMessage too: the message that wakes a stopped worker (a page's hello) is
+  // dropped if no listener exists yet, and the sender would read the silence as a decline.
+  // The handlers below therefore wait on `ready` rather than on being registered late.
   chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === "install") {
       // First run lands on Allow Sites: nothing registers until a site is allowed, while the
@@ -747,6 +762,23 @@ async function doInit(): Promise<void> {
     void initServiceWorker().then(() => revokeUngrantedTabs());
   });
 
+  chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
+    if (!isMsg(raw) || raw.target !== "background") {
+      return false;
+    }
+    // Every handler waits on the same settled promise, so arrival order is preserved.
+    void ready.then(() => handleMessage(raw, sender, sendResponse));
+    return raw.type === "ui/getState" || raw.type === "page/hello"; // async response only for these
+  });
+  // A closed tab takes its panel with it; otherwise metering would run for a ghost.
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    void ready.then(() => {
+      if (panelTabs.delete(tabId)) {
+        void syncMicMeter();
+      }
+    });
+  });
+
   config = await loadConfig();
   // An MV3 worker is killed whenever it goes idle; a restart must come back with the same
   // credential rather than silently demoting a provisioned registration to the manual account.
@@ -754,22 +786,9 @@ async function doInit(): Promise<void> {
   armProvisionExpiry();
   tracker = new TabTracker(() => config.allowSites);
   tracker.onChange(() => void evaluate());
-  // A closed tab takes its panel with it; otherwise metering would run for a ghost.
-  chrome.tabs.onRemoved.addListener((tabId) => {
-    if (panelTabs.delete(tabId)) {
-      void syncMicMeter();
-    }
-  });
-
-  chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
-    if (!isMsg(raw) || raw.target !== "background") {
-      return false;
-    }
-    void handleMessage(raw, sender, sendResponse);
-    return raw.type === "ui/getState" || raw.type === "page/hello"; // async response only for these
-  });
 
   await tracker.init();
+  markReady();
   await syncContentScripts();
   await evaluate();
 }
