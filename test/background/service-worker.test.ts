@@ -412,6 +412,93 @@ describe("revoking open tabs", () => {
     await vi.waitFor(() => expect(revokedTabs()).toEqual([2]));
   });
 
+  // A stopped worker woken by Options' own config/changed has already read the new list in
+  // init, so the in-memory diff is empty: the message must carry what changed.
+  const changed = (sites?: { added: string[]; removed: string[] }) =>
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed", ...(sites ? { sites } : {}) }, {}, () => {});
+
+  it("a cold worker revokes a removed site's open tabs from the sites named in the message", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["app.example.com"] });
+    changed({ added: [], removed: ["crm.example.com"] });
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
+  });
+
+  it("a cold worker injects into open tabs of an added site named in the message", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.executedScripts.length = 0;
+    changed({ added: ["crm.example.com"], removed: [] });
+    await vi.waitFor(() => expect(fake.executedScripts.map((i) => i.target.tabId)).toEqual([1]));
+  });
+
+  it("ignores named sites that the current list contradicts", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.executedScripts.length = 0;
+    // Removed crm but it is listed again; added app but it is no longer listed.
+    changed({ added: ["app.example.com"], removed: ["crm.example.com"] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(revokedTabs()).toEqual([]);
+    expect(fake.executedScripts).toEqual([]);
+  });
+
+  // Cold wake: the message arrives while doInit is still before its own content-script sync, so
+  // the two syncs overlap. Unserialized, the second write threw and aborted the handler.
+  async function coldWake(config: Record<string, unknown>, sites: { added: string[]; removed: string[] }) {
+    // Real storage and scripting calls take a while; with instant fakes doInit's sync finishes
+    // before the handler's starts and the overlap never happens.
+    const get = fake.scripting.getRegisteredContentScripts;
+    fake.scripting.getRegisteredContentScripts = async () => {
+      const registered = await get();
+      await new Promise((r) => setTimeout(r, 15));
+      return registered;
+    };
+    seedConfig(config);
+    const mod = await import("../../src/background/service-worker.js");
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed", sites }, {}, () => {});
+    await mod.initServiceWorker();
+  }
+  const scriptFor = (host: string) => ({ id: `web-sip-phone-${host}`, matches: [`https://${host}/*`] });
+
+  it("a cold wake racing doInit's own sync still revokes the removed site's open tabs", async () => {
+    fake.registeredScripts.push(scriptFor("crm.example.com"));
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await coldWake({ account: ACCOUNT, allowSites: [] }, { added: [], removed: ["crm.example.com"] });
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
+    expect(fake.registeredScripts).toEqual([]);
+  });
+
+  it("a cold wake racing doInit's own sync still injects into the added site's open tabs", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await coldWake({ account: ACCOUNT, allowSites: ["crm.example.com"] }, { added: ["crm.example.com"], removed: [] });
+    await vi.waitFor(() => expect(fake.executedScripts.map((i) => i.target.tabId)).toEqual([1]));
+    expect(fake.registeredScripts.map((s) => s.id)).toEqual(["web-sip-phone-crm.example.com"]);
+  });
+
+  it("revokes open tabs even when an earlier step of the handler throws", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.scripting.registerContentScripts = async () => {
+      throw new Error("simulated register failure");
+    };
+    seedConfig({ account: ACCOUNT, allowSites: ["app.example.com"] });
+    changed({ added: [], removed: ["crm.example.com"] });
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
+  });
+
+  it("tolerates a malformed sites field", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.runtime.onMessage.fire(
+      { target: "background", type: "config/changed", sites: { added: "x", removed: null } },
+      {},
+      () => {}
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(revokedTabs()).toEqual([]);
+  });
+
   it("a host permission revoked outside Options revokes the tabs whose origin is no longer granted", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });

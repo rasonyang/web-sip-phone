@@ -154,12 +154,22 @@ export function installFakeChrome() {
 
     scripting: {
       registerContentScripts: async (scripts: Array<{ id: string; matches: string[] }>) => {
+        // Like Chrome: one script per id, and the whole call is rejected on a duplicate.
+        for (const { id } of scripts) {
+          if (registeredScripts.some((r) => r.id === id)) {
+            throw new Error(`Duplicate script ID '${id}'`);
+          }
+        }
         registeredScripts.push(...scripts);
       },
       unregisterContentScripts: async (filter: { ids: string[] }) => {
         for (const id of filter.ids) {
-          const i = registeredScripts.findIndex((s) => s.id === id);
-          if (i >= 0) registeredScripts.splice(i, 1);
+          if (!registeredScripts.some((s) => s.id === id)) {
+            throw new Error(`Nonexistent script ID '${id}'`);
+          }
+        }
+        for (const id of filter.ids) {
+          registeredScripts.splice(registeredScripts.findIndex((s) => s.id === id), 1);
         }
       },
       getRegisteredContentScripts: async () => [...registeredScripts],
