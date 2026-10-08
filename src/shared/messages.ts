@@ -43,6 +43,17 @@ export interface TabState {
   pos: StoredDotPosition | null;
 }
 
+/**
+ * The worker's answer to a `page/hello`. `declined` is a deliberate refusal (the sender is not a
+ * top-frame Allow Site page) and the only reply that makes the content script stand down; a
+ * missing reply means the worker never answered, which says nothing about the site.
+ */
+export type HelloReply = TabState | { declined: true };
+
+export function isHelloDeclined(reply: unknown): reply is { declined: true } {
+  return typeof reply === "object" && reply !== null && (reply as { declined?: unknown }).declined === true;
+}
+
 export type Msg =
   | { target: "offscreen"; type: "runtime/start"; config: RuntimeConfig }
   | { target: "offscreen"; type: "runtime/stop" }

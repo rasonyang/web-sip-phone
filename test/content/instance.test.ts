@@ -24,7 +24,7 @@ function displayState(overrides: Partial<DisplayState> = {}): DisplayState {
 
 let fake: FakeChrome;
 /** What the worker answers ui/getState and page/hello with; `null` rejects as a sleeping worker would. */
-let reply: TabState | null;
+let reply: unknown;
 let posts: Record<string, unknown>[];
 let mounted: WebSipPhoneInstance[];
 
@@ -246,7 +246,7 @@ describe("site removal", () => {
     // The site is removed: the worker now declines, and this tab gets no more broadcasts.
     fake.runtime.sendMessage = async (message: unknown) => {
       fake.sentRuntimeMessages.push(message);
-      return undefined;
+      return { declined: true };
     };
     posts.length = 0;
     hello();
@@ -258,6 +258,45 @@ describe("site removal", () => {
     hello("n-2");
     await flush();
     expect(posts).toEqual([]);
+  });
+
+  it.each([
+    ["an undefined reply", async () => undefined],
+    ["a null reply", async () => null],
+    ["an unrecognised reply", async () => ({ nope: 1 })],
+    ["a rejected promise", async () => Promise.reject(new Error("boom"))],
+    [
+      "a missing receiving end",
+      async () => {
+        throw new Error("Could not establish connection. Receiving end does not exist.");
+      }
+    ]
+  ])("%s to a hello is no answer: instance, marker and listener stay", async (_name, answer) => {
+    const instance = mount();
+    await flush();
+    fake.runtime.sendMessage = async (message: unknown) => {
+      fake.sentRuntimeMessages.push(message);
+      return answer();
+    };
+    for (const nonce of ["n-1", "n-2"]) {
+      posts.length = 0;
+      hello(nonce);
+      await flush();
+      expect(hellos()).toHaveLength(1); // still listening and answering from cache
+      expect(states()).toHaveLength(1);
+    }
+    expect(hosts()).toHaveLength(1);
+    expect(document.documentElement.dataset.webSipPhone).toBe("9.9.9");
+    expect(fake.runtime.onMessage.listeners).toHaveLength(1);
+    void instance;
+  });
+
+  it("an unusable ui/getState reply does not tear anything down", async () => {
+    reply = undefined;
+    mount();
+    await flush();
+    expect(hosts()).toHaveLength(1);
+    expect(document.documentElement.dataset.webSipPhone).toBe("9.9.9");
   });
 
   it("a site/revoked message from the worker tears the instance down without any hello", async () => {

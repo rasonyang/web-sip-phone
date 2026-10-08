@@ -82,7 +82,7 @@ function reachableStrings(value: unknown, seen = new WeakSet<object>(), depth = 
 
 let sent: Msg[];
 let requested: Msg[];
-let requestResult: TabState | null | undefined;
+let requestResult: TabState | null | "declined";
 let posts: Record<string, unknown>[];
 let bridge: PageBridge;
 let collect: (e: MessageEvent) => void;
@@ -209,7 +209,7 @@ describe("PageBridge worker decline", () => {
   });
 
   it("drops the presence marker and stops listening when the worker declines", async () => {
-    requestResult = undefined;
+    requestResult = "declined";
     bridge.attach();
     expect(document.documentElement.dataset.webSipPhone).toBe(VERSION);
 
@@ -262,7 +262,7 @@ describe("PageBridge worker decline", () => {
     await flush();
     posts = [];
 
-    requestResult = undefined; // the site was removed; the cache still says REGISTERED
+    requestResult = "declined"; // the site was removed; the cache still says REGISTERED
     fromPage(hello("n-1"));
     await flush();
     expect(declined).toBe(1);

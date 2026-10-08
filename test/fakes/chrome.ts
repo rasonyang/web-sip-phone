@@ -76,10 +76,13 @@ export function installFakeChrome() {
     removedTabs,
     /** Tab returned by tabs.getCurrent(); undefined outside a tab-hosted page. */
     _currentTab: undefined as FakeTab | undefined,
+    /** While set, every storage read waits on it: a worker that has woken but not yet loaded. */
+    _storageGate: null as Promise<void> | null,
 
     storage: {
       local: {
         get: async (key: string | string[]) => {
+          await fake._storageGate;
           const keys = Array.isArray(key) ? key : [key];
           const result: Record<string, unknown> = {};
           for (const k of keys) {
@@ -100,7 +103,10 @@ export function installFakeChrome() {
         }
       },
       session: {
-        get: async (key: string) => (key in sessionData ? { [key]: sessionData[key] } : {}),
+        get: async (key: string) => {
+          await fake._storageGate;
+          return key in sessionData ? { [key]: sessionData[key] } : {};
+        },
         set: async (items: Record<string, unknown>) => {
           const changes: Record<string, chrome.storage.StorageChange> = {};
           for (const [k, v] of Object.entries(items)) {
