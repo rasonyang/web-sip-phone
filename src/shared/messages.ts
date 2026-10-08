@@ -74,7 +74,9 @@ export type Msg =
   | { target: "background"; type: "ui/panelState"; open: boolean }
   // `signOut` is set only by Options' Sign Out / Clear Account: it also drops the held
   // provisioned credential, which no config diff can show (it is not in `config.account`).
-  | { target: "background"; type: "config/changed"; signOut?: boolean }
+  // `sites` is the Allow Sites change Options just made (see the handler for why the worker
+  // cannot always work it out itself).
+  | { target: "background"; type: "config/changed"; signOut?: boolean; sites?: { added: string[]; removed: string[] } }
   // Options "Re-sync": re-broadcast state to every Allow Site tab so host pages re-evaluate
   // whether to provision, and restart the provisioning grace window.
   | { target: "background"; type: "ui/resync" }

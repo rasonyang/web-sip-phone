@@ -112,7 +112,11 @@ describe("options deep link ?site=", () => {
 
     expect(fake.permissionRequests).toContainEqual({ origins: ["https://crm.example.com/*"] });
     expect(fake._localData[SITES_KEY]).toEqual(["crm.example.com"]);
-    expect(fake.sentRuntimeMessages).toContainEqual({ target: "background", type: "config/changed" });
+    expect(fake.sentRuntimeMessages).toContainEqual({
+      target: "background",
+      type: "config/changed",
+      sites: { added: ["crm.example.com"], removed: [] }
+    });
     expect($("site-list").textContent).toContain("crm.example.com");
   });
 
@@ -163,6 +167,24 @@ describe("options deep link ?site=", () => {
 
     expect($("site-error").textContent).toBe("Already configured.");
     expect(visible("site-allow-deeplink")).toBe(false);
+  });
+
+  it("removing a site tells the worker exactly which host was removed", async () => {
+    fake._localData[SITES_KEY] = ["crm.example.com", "app.example.com"];
+    await load("/options.html");
+
+    const remove = [...document.querySelectorAll<HTMLButtonElement>("#site-list li")].find((li) =>
+      li.textContent?.includes("crm.example.com")
+    )!.querySelector("button")!;
+    remove.click();
+    await flush();
+
+    expect(fake._localData[SITES_KEY]).toEqual(["app.example.com"]);
+    expect(fake.sentRuntimeMessages).toContainEqual({
+      target: "background",
+      type: "config/changed",
+      sites: { added: [], removed: ["crm.example.com"] }
+    });
   });
 
   it("parseSiteDeepLink classifies absent, valid, invalid and configured links", async () => {

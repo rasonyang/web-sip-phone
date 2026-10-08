@@ -30,10 +30,12 @@ function setSiteStatus(text: string): void {
   $("site-status").textContent = text;
 }
 
-function notifyConfigChanged(signOut = false): void {
+function notifyConfigChanged(signOut = false, sites?: { added: string[]; removed: string[] }): void {
   const msg: Msg = signOut
     ? { target: "background", type: "config/changed", signOut: true }
-    : { target: "background", type: "config/changed" };
+    : sites
+      ? { target: "background", type: "config/changed", sites }
+      : { target: "background", type: "config/changed" };
   void chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
@@ -447,7 +449,11 @@ function mutateSites(fn: (sites: string[]) => string[] | null): Promise<void> {
       return;
     }
     await saveConfig({ allowSites: next });
-    notifyConfigChanged();
+    // Say what changed: a worker woken by this very message has already read the new list.
+    notifyConfigChanged(false, {
+      added: next.filter((h) => !cfg.allowSites.includes(h)),
+      removed: cfg.allowSites.filter((h) => !next.includes(h))
+    });
   });
   // Keep the queue alive after failures; callers observe `run` for the real outcome.
   siteMutation = run.catch(() => {});

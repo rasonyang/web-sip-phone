@@ -395,7 +395,22 @@ function evaluate(): Promise<void> {
   return evaluating;
 }
 
-async function syncContentScripts(): Promise<void> {
+let contentScriptOps: Promise<void> = Promise.resolve();
+
+/**
+ * Serialized, and reads `config` when it runs rather than when queued. A cold wake runs doInit's
+ * sync and the waking config/changed handler's sync at the same moment; both would read the
+ * registered scripts before either wrote, and the second write would throw (a duplicate id on
+ * add, a nonexistent one on remove).
+ */
+function syncContentScripts(): Promise<void> {
+  const run = contentScriptOps.then(doSyncContentScripts);
+  // Keep the chain alive after a failure; the caller still observes `run`.
+  contentScriptOps = run.catch((e) => console.warn("[WebSipPhone] content script sync failed", e));
+  return run;
+}
+
+async function doSyncContentScripts(): Promise<void> {
   const registered = await chrome.scripting.getRegisteredContentScripts();
   const wantedIds = new Set(config.allowSites.map((h) => SCRIPT_PREFIX + h));
   const staleIds = registered.map((s) => s.id).filter((id) => id.startsWith(SCRIPT_PREFIX) && !wantedIds.has(id));
@@ -617,34 +632,55 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       // credential, since the fingerprint changes again.
       const previous = config;
       config = await loadConfig();
-      await queueProvisionOp(async () => {
-        // A provisioned credential is accepted on the strength of its origin being an Allow
-        // Site. Taking that site off the list withdraws exactly that, so the credential goes
-        // with it — otherwise a removed site's registration would outlive the permission it
-        // rested on. Queued so it cannot interleave with a provision arriving at the same
-        // moment.
-        if (provisioned && !config.allowSites.includes(new URL(provisioned.origin).hostname)) {
-          await dropProvisioned();
-        }
-        // Sign Out clears everything, not just the half the user can see. The provisioned
-        // credential lives in session storage, not in `config.account`, so no config diff can
-        // reveal a sign-out (with no manual account the account is null before and after):
-        // Options says so explicitly with `signOut`, and only that flag drops it. An ordinary
-        // save must never cost the phone its credential. Dropped at once, mid-call included,
-        // like a deprovision or an Allow Sites removal: the user asked for this, and evaluate()
-        // still defers the runtime teardown to hang-up, so a live call is not cut.
-        if (msg.signOut === true) {
-          clearProvisionGrace();
-          provisionFault = null;
-          await dropProvisioned();
-        }
-      });
-      await syncContentScripts();
-      await tracker.refresh();
-      await evaluate();
-      // After evaluate(), so an injected script's ui/getState is answered with the new state.
-      await injectIntoOpenTabs(config.allowSites.filter((h) => !previous.allowSites.includes(h)));
-      await revokeOpenTabs(previous.allowSites.filter((h) => !config.allowSites.includes(h)));
+      // Worked out up front and applied in `finally`: on a cold wake doInit's own sync races this
+      // handler's, and a throw from any step below must not cost the open tabs their inject or
+      // revoke.
+      // The in-memory diff is empty when this very message woke a stopped worker: its init
+      // already read the new list, so Options names what it changed. A named host counts only if
+      // it still holds in the list just loaded, so a message that lands after a later save
+      // (add then quick remove) cannot undo that save.
+      const listed = (h: string) => config.allowSites.includes(h);
+      const named = (k: "added" | "removed") =>
+        Array.isArray(msg.sites?.[k]) ? msg.sites[k].filter((h) => typeof h === "string") : [];
+      const toInject = [
+        ...new Set([...config.allowSites.filter((h) => !previous.allowSites.includes(h)), ...named("added").filter(listed)])
+      ];
+      const toRevoke = [
+        ...new Set([...previous.allowSites.filter((h) => !listed(h)), ...named("removed").filter((h) => !listed(h))])
+      ];
+      try {
+        await queueProvisionOp(async () => {
+          // A provisioned credential is accepted on the strength of its origin being an Allow
+          // Site. Taking that site off the list withdraws exactly that, so the credential goes
+          // with it — otherwise a removed site's registration would outlive the permission it
+          // rested on. Queued so it cannot interleave with a provision arriving at the same
+          // moment.
+          if (provisioned && !config.allowSites.includes(new URL(provisioned.origin).hostname)) {
+            await dropProvisioned();
+          }
+          // Sign Out clears everything, not just the half the user can see. The provisioned
+          // credential lives in session storage, not in `config.account`, so no config diff can
+          // reveal a sign-out (with no manual account the account is null before and after):
+          // Options says so explicitly with `signOut`, and only that flag drops it. An ordinary
+          // save must never cost the phone its credential. Dropped at once, mid-call included,
+          // like a deprovision or an Allow Sites removal: the user asked for this, and evaluate()
+          // still defers the runtime teardown to hang-up, so a live call is not cut.
+          if (msg.signOut === true) {
+            clearProvisionGrace();
+            provisionFault = null;
+            await dropProvisioned();
+          }
+        });
+        await syncContentScripts();
+        await tracker.refresh();
+        await evaluate();
+      } catch (e) {
+        console.warn("[WebSipPhone] config change not fully applied", e);
+      } finally {
+        // After evaluate(), so an injected script's ui/getState is answered with the new state.
+        await injectIntoOpenTabs(toInject);
+        await revokeOpenTabs(toRevoke);
+      }
       break;
     }
     case "ui/resync":
