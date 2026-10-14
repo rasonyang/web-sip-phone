@@ -367,6 +367,51 @@ describe("PageBridge provisioning", () => {
     expect(sent).toEqual([{ target: "background", type: "page/deprovision" }]);
   });
 
+  describe("hello and deprovision callbacks", () => {
+    let hellos: number;
+    let deprovisions: number;
+    let observed: PageBridge;
+    beforeEach(() => {
+      hellos = 0;
+      deprovisions = 0;
+      observed = new PageBridge({
+        win: window,
+        version: VERSION,
+        extensionId: EXT_ID,
+        send: () => {},
+        request: () => Promise.resolve(requestResult),
+        onHello: () => hellos++,
+        onDeprovision: () => deprovisions++
+      });
+      observed.attach();
+    });
+    afterEach(() => observed.detach());
+
+    const helloMsg = { source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce: "n-1" };
+    const deprovisionMsg = { source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "deprovision" };
+
+    it("fire for valid same-window same-origin messages, before the worker answers", async () => {
+      fromPage(helloMsg);
+      expect(hellos).toBe(1);
+      fromPage(deprovisionMsg);
+      expect(deprovisions).toBe(1);
+      await flush();
+    });
+
+    it("do not fire for another origin, another source, or an invalid message", async () => {
+      fromPage(helloMsg, "https://evil.example");
+      fromPage(helloMsg, ORIGIN, null);
+      fromPage(deprovisionMsg, "https://evil.example");
+      fromPage(deprovisionMsg, ORIGIN, null);
+      fromPage({ ...helloMsg, protocolVersion: 99 });
+      fromPage({ ...helloMsg, nonce: undefined });
+      fromPage({ ...deprovisionMsg, source: "other" });
+      await flush();
+      expect(hellos).toBe(0);
+      expect(deprovisions).toBe(0);
+    });
+  });
+
   it("retains no part of the credential", async () => {
     bridge.attach();
     fromPage(provisionMessage());

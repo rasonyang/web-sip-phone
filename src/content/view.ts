@@ -440,6 +440,17 @@ export class WebSipPhoneView {
     return `${state.error}:${state.details.lastError?.reasonPhrase ?? ""}`;
   }
 
+  /**
+   * Close the panel if it is open, through the normal render path so `panelState` goes out and
+   * microphone metering stops. For an owner that is about to hide the widget.
+   */
+  closePanel(): void {
+    if (this.isExpanded()) {
+      this.collapse();
+      this.render();
+    }
+  }
+
   private isExpanded(): boolean {
     const state = this.state;
     return (

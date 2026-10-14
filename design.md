@@ -122,6 +122,7 @@ Responsibilities:
   registration expiry, microphone device and level, TURN risk, and the active fault — never call details
 * Receives Service Worker broadcasts
 * Handles expand (error/status panel), collapse, free dragging, and opening settings
+* Shows the widget on every page of an Allow Site, unless the page declares `<meta name="web-sip-phone" content="widget=page">` (read once at injection). Then the widget is hidden until the page sends `hello` (and again after `deprovision`), except while a call is in progress, which always shows it (README, "Host-page provisioning")
 * Is a pure view of the runtime: it is created and destroyed by page lifecycle and owns no part of the call (§6.5)
 
 The Content Script must not:
