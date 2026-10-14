@@ -3,6 +3,7 @@ import { isHelloDeclined, isMsg, type Msg, type TabState } from "../shared/messa
 import { RuntimeState, type DisplayState } from "../shared/state.js";
 import { applyPosition, clampPixels, positionFromPixels } from "./drag.js";
 import { PageBridge } from "./page-bridge.js";
+import { readWidgetMode } from "./page-declaration.js";
 import { createRuntimeGuard } from "./runtime-guard.js";
 import { WebSipPhoneView, type UiIntent } from "./view.js";
 
@@ -36,6 +37,14 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   // this one then sets them again. A host still present afterwards belongs to a script that
   // predates the replace event (1.0.5 and earlier) and cannot be told to go; its element is
   // removed here, although its listeners stay behind in its own world.
+  //
+  // What the old instance knew about this page is read off its host first, since the page is
+  // not expected to say hello again after an update (README, "Already-open tabs"): a host that
+  // carries the hello mark keeps it. A host with no `data-mode` was built by 1.1.0 or earlier,
+  // which always showed the widget, so it counts as helloed too — a working agent's phone must
+  // not vanish on the update.
+  const previous = document.getElementById(HOST_ID);
+  const inheritedHello = previous !== null && (previous.dataset.hello === "1" || previous.dataset.mode === undefined);
   document.dispatchEvent(new Event(REPLACE_EVENT));
   document.getElementById(HOST_ID)?.remove();
 
@@ -69,10 +78,36 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   }
   const send = (msg: Msg): void => guard.send(msg);
 
+  // Read once, here. A page that declares `widget=page` owns the widget's visibility.
+  const mode = readWidgetMode(document);
+  let helloSeen = inheritedHello;
+  // Latest display state, for the call override and the maybeNudgeRecovery health check.
+  let lastState: DisplayState | null = null;
+
   host = document.createElement("div");
   host.id = HOST_ID;
-  document.documentElement.appendChild(host);
+  host.dataset.mode = mode;
   const hostEl = host;
+  // Display is set inline and important: the view's `:host { all: initial }` would otherwise
+  // beat the `hidden` attribute. Applied before the host is appended, so a page-controlled
+  // widget is never on screen for even one frame before it is hidden.
+  function syncVisibility(): void {
+    const visible = mode === "always" || helloSeen || lastState?.busy === true;
+    if (visible) {
+      hostEl.style.removeProperty("display");
+    } else {
+      hostEl.style.setProperty("display", "none", "important");
+      // A hidden widget must not keep an invisible panel open (and the mic meter running).
+      view?.closePanel();
+    }
+    if (helloSeen) {
+      hostEl.dataset.hello = "1";
+    } else {
+      delete hostEl.dataset.hello;
+    }
+  }
+  syncVisibility();
+  document.documentElement.appendChild(host);
 
   view = new WebSipPhoneView(
     hostEl,
@@ -126,7 +161,15 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
     },
     alive: () => guard.alive(),
     // Declined means this site was removed from Allow Sites: the widget goes with the marker.
-    onDeclined: () => teardown()
+    onDeclined: () => teardown(),
+    onHello: () => {
+      helloSeen = true;
+      syncVisibility();
+    },
+    onDeprovision: () => {
+      helloSeen = false;
+      syncVisibility();
+    }
   });
   const bridgeRef = bridge;
   bridgeRef.attach();
@@ -139,7 +182,6 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   // Set once any TabState (initial fetch or broadcast) has been applied; gates the initial-fetch retry loop.
   let gotState = false;
   let lastPos: StoredDotPosition | null = null;
-  let lastState: DisplayState | null = null;
   function applyTabState(ts: TabState): void {
     if (disposed) {
       return;
@@ -149,6 +191,7 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
     lastPos = ts.pos;
     lastState = ts.state;
     viewRef.update(ts.state);
+    syncVisibility();
     bridgeRef.publish(ts.state);
     applyPosition(hostEl, ts.pos);
     if (firstState) {

@@ -124,6 +124,31 @@ extension as absent. One exception on the first update to 1.0.6 only: a 1.0.5 co
 this teardown, so its widget is removed but it can still answer a `hello` from an open tab with its
 old `extensionVersion`; ignore a `hello` reply whose `extensionVersion` is older than one already seen.
 
+**Controlling the widget's visibility.** By default the widget shows on every page of an Allow Site.
+A page that has no phone to offer (an administrator's view, a sign-in page) can ask the extension to
+keep it away until the page itself says otherwise, with a static tag in the served HTML:
+
+```html
+<meta name="web-sip-phone" content="widget=page">
+```
+
+- The tag must be in the HTML the server sends. It is read once, when the content script is
+  injected; a tag added or removed by script afterwards is ignored.
+- With the tag, the widget is hidden from the first frame and appears when this page sends `hello`.
+  A `deprovision` hides it again, and the next `hello` shows it again. Each tab follows its own page.
+- A call that is dialing, ringing, active or held always shows the widget, whatever the page said,
+  so a call is never left without a way to see or end it (for example after a reload mid-call,
+  before the page has said `hello`). When the call ends the widget goes back to following the page.
+- Hiding the widget closes its panel, which stops microphone metering.
+- Anything other than exactly `widget=page` (case and surrounding whitespace are ignored) is no
+  declaration, and the widget behaves as it always has. If several `web-sip-phone` tags are present,
+  the first one decides.
+- When the extension updates, the replacement instance keeps what the old one knew, so an agent's
+  widget stays up without a second `hello`; a page that had not said `hello` stays hidden. On the
+  update from 1.1.0 or earlier, whose widget was always shown, it stays shown until the page sends
+  `deprovision` or is reloaded.
+- The presence marker, the `hello` reply and the `state` messages are unchanged; only visibility is.
+
 **Transport.** `window.postMessage` on the page's own window — no `externally_connectable`, no
 custom events. The content script accepts a message only when `event.source === window` and
 `event.origin === location.origin`, and the service worker independently re-checks the sending

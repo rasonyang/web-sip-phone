@@ -50,6 +50,32 @@ function hello(nonce = "n-1"): void {
   );
 }
 
+function deprovision(): void {
+  window.dispatchEvent(
+    new MessageEvent("message", {
+      data: { source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "deprovision" },
+      origin: ORIGIN,
+      source: window
+    })
+  );
+}
+
+function declare(content = "widget=page"): HTMLMetaElement {
+  const meta = document.createElement("meta");
+  meta.name = "web-sip-phone";
+  meta.content = content;
+  document.head.appendChild(meta);
+  return meta;
+}
+
+function broadcast(state: DisplayState): void {
+  fake.runtime.onMessage.fire({ target: "content", type: "state/update", state, pos: null }, {}, () => {});
+}
+
+const hostEl = (): HTMLElement => document.getElementById(HOST_ID)!;
+const shown = (): boolean => hostEl().style.display !== "none";
+const busy = (): DisplayState => displayState({ busy: true });
+
 const hellos = () => posts.filter((p) => p.type === "hello");
 const states = () => posts.filter((p) => p.type === "state");
 const hosts = () => document.querySelectorAll(`#${HOST_ID}`);
@@ -85,6 +111,7 @@ beforeEach(() => {
     }
   });
   document.querySelectorAll(`#${HOST_ID}`).forEach((el) => el.remove());
+  document.head.querySelectorAll('meta[name="web-sip-phone"]').forEach((el) => el.remove());
   delete document.documentElement.dataset.webSipPhone;
 });
 
@@ -381,5 +408,183 @@ describe("replacement", () => {
     expect(second.disposed).toBe(false);
     expect(document.documentElement.dataset.webSipPhone).toBe("9.9.9");
     expect(hosts()).toHaveLength(1);
+  });
+});
+
+describe("page-controlled visibility", () => {
+  it("an undeclared page shows the widget at once, whatever the page says", async () => {
+    mount();
+    expect(shown()).toBe(true);
+    await flush();
+    hello();
+    deprovision();
+    await flush();
+    expect(shown()).toBe(true);
+    expect(hostEl().dataset.mode).toBe("always");
+  });
+
+  it("a declared page is hidden until hello, hides again on deprovision, and shows on the next hello", async () => {
+    declare();
+    mount();
+    expect(shown()).toBe(false);
+    await flush();
+    expect(shown()).toBe(false);
+
+    hello();
+    expect(shown()).toBe(true); // before the worker has answered
+    await flush();
+    expect(shown()).toBe(true);
+
+    deprovision();
+    expect(shown()).toBe(false);
+    hello("n-2");
+    expect(shown()).toBe(true);
+  });
+
+  it("a malformed declaration leaves the widget shown", () => {
+    declare("widget=pages");
+    mount();
+    expect(shown()).toBe(true);
+  });
+
+  it("a declared page that never says hello still shows a call from ring to hang-up, then hides", async () => {
+    declare();
+    mount();
+    await flush();
+    expect(shown()).toBe(false);
+    broadcast(busy()); // ringing
+    expect(shown()).toBe(true);
+    broadcast(busy()); // answered
+    expect(shown()).toBe(true);
+    broadcast(displayState({ busy: false })); // ended
+    expect(shown()).toBe(false);
+  });
+
+  it("hello and then call end stays shown; deprovision during a call hides only once the call ends", async () => {
+    declare();
+    mount();
+    await flush();
+    hello();
+    broadcast(busy());
+    broadcast(displayState());
+    expect(shown()).toBe(true);
+
+    broadcast(busy());
+    deprovision();
+    expect(shown()).toBe(true);
+    broadcast(displayState());
+    expect(shown()).toBe(false);
+  });
+
+  it("each tab follows its own page; a call shows in both", async () => {
+    // Two content scripts cannot share one jsdom document, so each is exercised in turn. The
+    // state is per-instance (closures in mountWebSipPhone, nothing module-level), and the
+    // broadcast reaches every tab, which is what the last step models.
+    declare();
+    const agent = mount();
+    await flush();
+    hello();
+    expect(shown()).toBe(true);
+    agent.teardown();
+
+    const admin = mount();
+    await flush();
+    expect(shown()).toBe(false); // no hello in this tab: the first tab's hello did not leak
+    broadcast(busy());
+    expect(shown()).toBe(true);
+    expect(admin.disposed).toBe(false);
+  });
+
+  it("a reload during an active call goes from hidden-at-creation straight to visible, never back", async () => {
+    declare();
+    reply = { state: busy(), pos: null };
+    const seen: string[] = [];
+    const observer = new MutationObserver(() => seen.push(shown() ? "shown" : "hidden"));
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    const appended = vi.spyOn(document.documentElement, "appendChild");
+    mount();
+    // Hidden before it was ever attached: no first frame with the widget on screen.
+    const host = appended.mock.calls.map((c) => c[0] as HTMLElement).find((el) => el.id === HOST_ID)!;
+    expect(host.style.display).toBe("none");
+    await flush();
+    broadcast(busy());
+    await flush();
+    observer.disconnect();
+    expect(shown()).toBe(true);
+    expect(seen).toContain("shown");
+    expect(seen.join(",")).not.toMatch(/shown,hidden/);
+  });
+
+  it("closing the panel on hide sends panelState false", async () => {
+    declare();
+    mount();
+    await flush();
+    hello();
+    hostEl().shadowRoot!.querySelector<HTMLElement>('[data-role="dot"]')!.click();
+    expect(fake.sentRuntimeMessages).toContainEqual({ target: "background", type: "ui/panelState", open: true });
+    deprovision();
+    expect(shown()).toBe(false);
+    expect(fake.sentRuntimeMessages.at(-1)).toEqual({ target: "background", type: "ui/panelState", open: false });
+  });
+
+  it("ignores a meta added after mount, and a declaration removed after mount", async () => {
+    mount();
+    declare();
+    await flush();
+    expect(shown()).toBe(true);
+    deprovision();
+    expect(shown()).toBe(true);
+    mounted.pop()!.teardown();
+    document.head.querySelectorAll('meta[name="web-sip-phone"]').forEach((el) => el.remove());
+
+    const meta = declare();
+    mount();
+    meta.remove();
+    await flush();
+    expect(shown()).toBe(false);
+    hello();
+    expect(shown()).toBe(true);
+    deprovision();
+    expect(shown()).toBe(false);
+  });
+});
+
+describe("visibility across instance replacement", () => {
+  it("an instance that saw hello hands that on without the page saying hello again", async () => {
+    declare();
+    mount();
+    await flush();
+    hello();
+    mount();
+    expect(shown()).toBe(true);
+    expect(hostEl().dataset.hello).toBe("1");
+  });
+
+  it("an instance that never saw hello hands on a hidden widget", async () => {
+    declare();
+    mount();
+    await flush();
+    mount();
+    expect(shown()).toBe(false);
+    expect(hostEl().dataset.hello).toBeUndefined();
+  });
+
+  it("a deprovisioned instance does not hand hello on", async () => {
+    declare();
+    mount();
+    await flush();
+    hello();
+    deprovision();
+    mount();
+    expect(shown()).toBe(false);
+  });
+
+  it("a host from 1.1.0 or earlier (no data-mode) counts as shown, so an agent's phone survives the update", () => {
+    const legacy = document.createElement("div");
+    legacy.id = HOST_ID;
+    document.documentElement.appendChild(legacy);
+    declare();
+    mount();
+    expect(shown()).toBe(true);
   });
 });

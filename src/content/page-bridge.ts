@@ -37,6 +37,13 @@ export interface PageBridgeEnv {
    * the marker and its own listener.
    */
   onDeclined?: () => void;
+  /**
+   * This page sent a valid `hello` — fired before the worker is asked anything, so a page that
+   * controls the widget's visibility sees it appear at once. A decline still tears it all down.
+   */
+  onHello?: () => void;
+  /** This page sent a valid `deprovision`. */
+  onDeprovision?: () => void;
 }
 
 /**
@@ -114,6 +121,7 @@ export class PageBridge {
     }
     switch (inbound.type) {
       case "hello":
+        this.env.onHello?.();
         this.post({
           source: EXTENSION_SOURCE,
           protocolVersion: PROTOCOL_VERSION,
@@ -131,6 +139,7 @@ export class PageBridge {
         break;
       case "deprovision":
         this.env.send({ target: "background", type: "page/deprovision" });
+        this.env.onDeprovision?.();
         break;
     }
   };
