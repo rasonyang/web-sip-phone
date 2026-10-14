@@ -16,6 +16,11 @@ local answer/hold/hangup, DTMF, transfer, multiple accounts, concurrent calls, v
 - **The offscreen document cannot itself prompt for microphone permission.** `getUserMedia`
   prompts do not surface reliably from an offscreen document; microphone access must be granted
   from the Options page (Advanced → Test microphone) before registration can succeed.
+- **Revoking the microphone unregisters the phone.** If the microphone permission is blocked while
+  the phone is registered, the page sees `microphone: "DENIED"` / `error: "MIC_UNAVAILABLE"` at once
+  and the registration is dropped and parked; granting it again re-registers by itself. A call that
+  is already in progress is never cut: the unregister waits for it to end. Chrome's `change` event
+  is the primary signal, with a permission re-read on page `hello` and on Retry as a backstop.
 - **Auto-answer never precedes a microphone grant.** Web SIP Phone will never fake a successful answer
   when the user has not granted microphone permission — an Agent First call with no microphone
   access fails rather than silently auto-answering without audio.

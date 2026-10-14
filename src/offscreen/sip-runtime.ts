@@ -3,7 +3,14 @@ import type { ErrorCode, FaultDetail, LinkStatus, ReconnectProgress } from "../s
 import { CallState, selectDisplayError } from "../shared/state.js";
 import { CallSessionManager, type InvitationLike } from "./call-session.js";
 import { diag } from "./diag-log.js";
-import { acquireMicOnce, MIC_CONSTRAINTS, probeMicPermission, readMicLabel, watchMicPermission } from "./media.js";
+import {
+  acquireMicOnce,
+  MIC_CONSTRAINTS,
+  probeMicPermission,
+  queryMicPermission,
+  readMicLabel,
+  watchMicPermission
+} from "./media.js";
 import type { RingtonePlayer } from "./ringtone.js";
 
 export interface UaLike {
@@ -164,12 +171,26 @@ export class SipRuntime {
   private attemptInFlight = false;
   private attemptQueued = false;
   /**
-   * Config held back because the microphone gate failed at start. A provisioned credential
-   * arrives from a host page that has no settings UI of its own, so the runtime retries by
-   * itself the moment the grant appears rather than waiting to be started again.
+   * Config held back because the microphone gate failed at start, or because the permission
+   * was revoked under a running registration (which is then dropped). A provisioned credential
+   * arrives from a host page that has no settings UI of its own, and a manual one should not
+   * need a trip to Options just to undo a Block, so the runtime restarts by itself the moment
+   * the grant appears.
    */
   private micPendingConfig: RuntimeConfig | null = null;
+  /**
+   * Permission watcher, subscribed once on first start and kept for the life of the runtime:
+   * it has to see a revoke while registered as well as a grant while parked. Never re-armed
+   * per start, so there is nothing to leak or stack.
+   */
   private micWatchUnsub: (() => void) | null = null;
+  /**
+   * The permission was revoked during a live call. DENIED is already reported, but the
+   * registration is only dropped when the call ends — a revoke must never cut a call. Set and
+   * consumed by state transitions (call end, grant), never by a timer: offscreen timers are
+   * throttled and must not decide anything about a call.
+   */
+  private micStopDeferred = false;
 
   constructor(
     private deps: {
@@ -190,6 +211,12 @@ export class SipRuntime {
           this.clearError("MEDIA_FAILED"); // new call: previous media failure no longer current
         }
         this.report();
+        if (!inProgress && this.micStopDeferred) {
+          // The call that held back a revoke-stop is over; the call-end transition itself is
+          // the trigger, not a timer.
+          this.micStopDeferred = false;
+          this.dropForMic();
+        }
       },
       onMediaFailed: (reason) => {
         this.raiseError("MEDIA_FAILED", reason);
@@ -215,15 +242,70 @@ export class SipRuntime {
     return code ? { code, reasonPhrase: this.errorReasons.get(code) ?? "" } : null;
   }
 
-  /** Forget a held-back provisioned config and stop listening for the permission grant. */
+  /** Forget a held-back config: a grant arriving later no longer restarts anything. */
   private clearMicPending(): void {
     this.micPendingConfig = null;
-    this.micWatchUnsub?.();
-    this.micWatchUnsub = null;
+  }
+
+  private ensureMicWatch(): void {
+    this.micWatchUnsub ??= watchMicPermission((state) => this.onMicPermission(state));
   }
 
   /**
-   * The microphone became available while a provisioned start was gated on it. Retry that start
+   * Permission moved, by a `change` event or by the worker's recheck. Idempotent by design: a
+   * recheck may report a state the runtime already acted on, and each branch ignores that.
+   */
+  private onMicPermission(state: "granted" | "blocked"): void {
+    if (state === "granted") {
+      if (this.micStopDeferred) {
+        // Restored before the call that deferred the stop ended: nothing was dropped, so
+        // there is nothing to restart. Just stop saying the microphone is blocked.
+        this.micStopDeferred = false;
+        this.micOk = true;
+        this.clearError("MICROPHONE_BLOCKED");
+        this.report();
+        return;
+      }
+      this.retryAfterMicGrant();
+      return;
+    }
+    // Only a start that got past the gate holds a config and a UA; anything else is already
+    // blocked or parked.
+    if (!this.running || !this.config || !this.micOk) {
+      return;
+    }
+    this.micOk = false;
+    this.raiseError("MICROPHONE_BLOCKED", "permission revoked");
+    this.report(); // the page learns at once, even when the registration has to outlive a call
+    if (this.callInProgress) {
+      this.micStopDeferred = true;
+      return;
+    }
+    this.dropForMic();
+  }
+
+  /** Unregister and park the running config until the permission comes back. */
+  private dropForMic(): void {
+    const cfg = this.config;
+    if (!cfg) {
+      return;
+    }
+    this.stopInternal(cfg).catch((e) => diag("sip", "mic-revoked stop failed", { error: String(e) }));
+  }
+
+  /**
+   * Worker-triggered backstop for a missed `change` event (page hello, Retry, visibility
+   * nudge). A cheap permission read, never a capture; a failed read changes nothing.
+   */
+  async recheckMic(): Promise<void> {
+    const state = await queryMicPermission();
+    if (state !== null) {
+      this.onMicPermission(state);
+    }
+  }
+
+  /**
+   * The microphone became available while a start was gated on it. Retry that start
    * with the config it was gated on — unless something has started the runtime since, in which
    * case the held config is stale and the live one wins.
    */
@@ -272,6 +354,8 @@ export class SipRuntime {
     this.attemptQueued = false;
     this.registerAttempts = 0;
     const gen = ++this.generation;
+    this.micStopDeferred = false;
+    this.ensureMicWatch();
 
     // A provisioned credential is verified with a real capture, not a permission probe: the
     // host page that pushed it cannot open the Options page to fix a device that is missing or
@@ -287,12 +371,9 @@ export class SipRuntime {
       this.raiseError("MICROPHONE_BLOCKED", provisionedSource ? "microphone unavailable" : "permission not granted");
       this.phase = "stopped";
       this.running = false;
-      if (provisionedSource) {
-        // Nothing else will re-start this: hold the config and come back on the grant.
-        this.micPendingConfig = config;
-        this.micWatchUnsub?.();
-        this.micWatchUnsub = watchMicPermission(() => this.retryAfterMicGrant());
-      }
+      // Nothing else will re-start this: hold the config and come back on the grant. The gate
+      // differs by source (real capture vs permission probe) but the way out is the same.
+      this.micPendingConfig = config;
       this.report();
       return;
     }
@@ -591,6 +672,7 @@ export class SipRuntime {
     this.micOk = ok;
     if (ok) {
       this.clearError("MICROPHONE_BLOCKED");
+      this.micStopDeferred = false;
       this.micLabel = await readMicLabel();
     } else {
       this.raiseError("MICROPHONE_BLOCKED", "permission denied or device unavailable");
@@ -627,14 +709,25 @@ export class SipRuntime {
     this.scheduleReconnect(0);
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    return this.stopInternal(null);
+  }
+
+  /**
+   * `parkFor` is the config to hold for an automatic restart when the stop is the runtime's own
+   * (permission revoked); a stop requested from outside passes null and retires it.
+   */
+  private async stopInternal(parkFor: RuntimeConfig | null): Promise<void> {
     this.running = false;
     const gen = ++this.generation;
     this.attemptQueued = false;
     this.config = null;
+    this.micStopDeferred = false;
     // A stop while the mic gate is pending is a decision not to run: a grant arriving later
-    // must not resurrect a credential the worker has since dropped.
-    this.clearMicPending();
+    // must not resurrect a credential the worker has since dropped. A revoke-stop is the
+    // opposite, and parks before the first await so a grant landing mid-teardown already
+    // finds the config (its start() bumps the generation and this teardown then yields).
+    this.micPendingConfig = parkFor;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -670,6 +763,12 @@ export class SipRuntime {
     this.phase = "stopped";
     this.errors.clear();
     this.errorReasons.clear();
+    if (parkFor) {
+      // Never report "stopped" without MICROPHONE_BLOCKED: the worker reads that as the blocker
+      // clearing and would reset its runtime bookkeeping, then restart the runtime itself.
+      this.micOk = false;
+      this.raiseError("MICROPHONE_BLOCKED", "permission revoked");
+    }
     this.reconnecting = false;
     this.callInProgress = false;
     this.registrationExpiresAt = null;

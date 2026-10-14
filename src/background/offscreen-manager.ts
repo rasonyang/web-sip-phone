@@ -12,6 +12,14 @@ export async function ensureOffscreen(): Promise<void> {
   });
 }
 
+/** Whether the offscreen document exists right now; unlike ensureOffscreen it never creates one. */
+export async function hasOffscreen(): Promise<boolean> {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType]
+  });
+  return contexts.length > 0;
+}
+
 export async function closeOffscreen(): Promise<void> {
   const contexts = await chrome.runtime.getContexts({
     contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType]

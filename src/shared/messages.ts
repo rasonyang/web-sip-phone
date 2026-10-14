@@ -59,6 +59,8 @@ export type Msg =
   | { target: "offscreen"; type: "runtime/stop" }
   | { target: "offscreen"; type: "runtime/retry" }
   | { target: "offscreen"; type: "runtime/testMic" }
+  // A permission read (never a capture) that backstops a missed PermissionStatus `change`.
+  | { target: "offscreen"; type: "runtime/recheckMic" }
   // Mic metering is expensive (a live capture + AudioContext) and pointless when nobody is
   // looking, so it is gated on at least one expanded panel.
   | { target: "offscreen"; type: "runtime/micMeter"; on: boolean }

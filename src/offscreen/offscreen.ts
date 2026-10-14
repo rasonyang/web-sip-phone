@@ -78,6 +78,10 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
       runtime.retry();
       sendResponse(true);
       return false;
+    case "runtime/recheckMic":
+      void runtime.recheckMic().catch(() => {});
+      sendResponse(true);
+      return false;
     case "runtime/testMic":
       runtime
         .testMic()
