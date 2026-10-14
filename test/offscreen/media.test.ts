@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MIC_CONSTRAINTS, probeMicPermission, attachRemoteAudio, watchMicPermission } from "../../src/offscreen/media.js";
+import { MIC_CONSTRAINTS, probeMicPermission, attachRemoteAudio, queryMicPermission, watchMicPermission } from "../../src/offscreen/media.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -102,15 +102,18 @@ describe("watchMicPermission", () => {
     await subscribed();
     fake.change("granted");
     expect(onGranted).toHaveBeenCalledTimes(1);
+    expect(onGranted).toHaveBeenCalledWith("granted");
   });
 
-  it("does not fire on a change event to denied", async () => {
-    const fake = stubStatus("prompt");
-    const onGranted = vi.fn();
-    watchMicPermission(onGranted);
+  it("reports a change away from granted as blocked, prompt included", async () => {
+    const fake = stubStatus("granted");
+    const onChange = vi.fn();
+    watchMicPermission(onChange);
     await subscribed();
     fake.change("denied");
-    expect(onGranted).not.toHaveBeenCalled();
+    fake.change("granted");
+    fake.change("prompt");
+    expect(onChange.mock.calls).toEqual([["blocked"], ["granted"], ["blocked"]]);
   });
 
   it("unsubscribe detaches the listener: a later grant fires nothing", async () => {
@@ -151,5 +154,21 @@ describe("watchMicPermission", () => {
     expect(() => watchMicPermission(onGranted)()).not.toThrow();
     await subscribed();
     expect(onGranted).not.toHaveBeenCalled();
+  });
+});
+
+describe("queryMicPermission", () => {
+  it("maps granted to granted and anything else to blocked", async () => {
+    vi.stubGlobal("navigator", { permissions: { query: () => Promise.resolve({ state: "granted" }) } });
+    expect(await queryMicPermission()).toBe("granted");
+    vi.stubGlobal("navigator", { permissions: { query: () => Promise.resolve({ state: "prompt" }) } });
+    expect(await queryMicPermission()).toBe("blocked");
+  });
+
+  it("returns null, never blocked or granted, when the read fails", async () => {
+    vi.stubGlobal("navigator", { permissions: { query: () => Promise.reject(new Error("nope")) } });
+    expect(await queryMicPermission()).toBeNull();
+    vi.stubGlobal("navigator", {});
+    expect(await queryMicPermission()).toBeNull();
   });
 });

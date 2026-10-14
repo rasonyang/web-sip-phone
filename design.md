@@ -405,6 +405,29 @@ The SIP Runtime starts only when all of the following hold:
 It is destroyed under the separate lifetime rule of §6.5 — condition 2 falling away is not on its
 own enough while a call is in progress.
 
+Condition 3 holds for the whole life of the runtime, not only at start. The offscreen runtime
+subscribes once to the microphone `PermissionStatus` `change` event and keeps that watcher for as
+long as it lives (only a `change` acts, never the initial read, so a granted-but-unusable device
+cannot loop `getUserMedia`). Both credential sources share one rule:
+
+* **Start gate failed** (provisioned: real capture; manual: permission probe) — the runtime does not
+  start, reports `MICROPHONE_BLOCKED`, and *parks* the config. The next grant restarts it.
+* **Permission leaves `granted` while running** (Block, or back to Ask) — the runtime immediately
+  reports `microphone: blocked` and `MICROPHONE_BLOCKED` (a host page sees `DENIED` /
+  `MIC_UNAVAILABLE` while the registration is still up), then unregisters, closes the WSS and
+  parks the config. The final status is `stopped` with `MICROPHONE_BLOCKED` still raised; a
+  status that was stopped *without* that error would read as the blocker clearing and make the
+  worker restart the runtime. A later grant restarts the parked config exactly like a gated start.
+* **A live call is never dropped for this.** If a call is ringing or active, `DENIED` is reported
+  at once but the unregister/park is deferred to the call-end transition itself (no timer decides
+  it). A grant before the call ends cancels the deferred stop and clears the error.
+* **Backstop for a missed `change` event.** On `page/hello` and `ui/retry` (the panel's Retry and
+  the content script's visibility nudge) the worker asks an *already existing* offscreen document
+  to re-read the permission (`runtime/recheckMic`: a `permissions.query`, never a capture). The
+  worker never creates the document for this and the hello reply does not wait on it. The runtime
+  applies the same transitions when the read disagrees with what it believes; a failed read
+  changes nothing.
+
 Flow:
 
 ```text
@@ -499,7 +522,8 @@ Consequences that are deliberate:
   hang-up therefore keeps the credential and the runtime, and the phone is not recycled at the
   end of the call. (Expiry, `deprovision` and removing the site from Allow Sites stay immediate.)
 * The link's `microphone` survives a teardown: the worker remembers the last measured value
-  ("ok"/"blocked") and reports it whenever no runtime reports one, until a new measurement.
+  ("ok"/"blocked") and reports it whenever no runtime reports one, until a new measurement. It only
+  fills in "unknown"; a live revoke reaches it through `offscreen/status` and overwrites it.
 * A call can therefore be in progress with no visible Web SIP Phone UI anywhere. This is accepted:
   call control belongs to FreeSWITCH, not to the browser, so an invisible call is still a
   correctly controlled one.

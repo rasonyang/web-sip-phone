@@ -5,7 +5,7 @@ import { parseProvisionRequest } from "../shared/page-protocol.js";
 import type { CredentialSource, ProvisionFault, ProvisionStatus } from "../shared/state.js";
 import { computeDisplayState } from "./state-aggregator.js";
 import { loadConfig, saveConfig } from "./config-store.js";
-import { closeOffscreen, ensureOffscreen } from "./offscreen-manager.js";
+import { closeOffscreen, ensureOffscreen, hasOffscreen } from "./offscreen-manager.js";
 import {
   clearProvisioned,
   loadProvisioned,
@@ -552,6 +552,19 @@ function pageSenderUrl(sender: chrome.runtime.MessageSender): string | null {
   return url;
 }
 
+/**
+ * Backstop for a PermissionStatus `change` the offscreen runtime missed: ask it to re-read the
+ * microphone permission. Fire and forget, and only when the offscreen document already exists —
+ * a recheck is no reason to create one, and a hello must never wait on it.
+ */
+function recheckMicIfRunning(): void {
+  void hasOffscreen()
+    .then((exists) =>
+      exists ? chrome.runtime.sendMessage({ target: "offscreen", type: "runtime/recheckMic" } satisfies Msg) : undefined
+    )
+    .catch(() => {});
+}
+
 async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sendResponse: (r?: unknown) => void): Promise<void> {
   switch (msg.type) {
     case "offscreen/status":
@@ -584,6 +597,7 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       break;
     }
     case "ui/retry":
+      recheckMicIfRunning();
       await chrome.runtime.sendMessage({ target: "offscreen", type: "runtime/retry" } satisfies Msg).catch(() => {});
       break;
     case "ui/openOptions":
@@ -700,6 +714,10 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       // without a listener), not as a refusal.
       const helloUrl = pageSenderUrl(sender);
       sendResponse(helloUrl !== null ? tabState() : ({ declined: true } satisfies HelloReply));
+      // Not awaited, like the grace window below: the reply is already out and must not wait.
+      if (helloUrl !== null) {
+        recheckMicIfRunning();
+      }
       // A page that says hello with nothing held is expected to provision. Give it the grace
       // window, once: a second hello (a reload, a second tab, or the same page again — the
       // content script forwards every hello, cached state or not) must not keep resetting the

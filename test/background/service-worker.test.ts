@@ -1379,4 +1379,75 @@ describe("host-page provisioning", () => {
     expect(broadcasts.length).toBeGreaterThan(0);
     expect(JSON.stringify(broadcasts)).not.toContain(PROV.a1Hash);
   });
+
+  it("28. page/hello and ui/retry forward a mic recheck to an existing offscreen document", async () => {
+    await bootWithTab();
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    expect(fake._offscreenOpen).toBe(true);
+    fake.sentRuntimeMessages.length = 0;
+
+    fire({ type: "page/hello" });
+    await vi.waitFor(() => expect(runtimeTypes()).toEqual(["runtime/recheckMic"]));
+
+    fake.sentRuntimeMessages.length = 0;
+    fire({ type: "ui/retry" }, {});
+    await vi.waitFor(() => expect([...runtimeTypes()].sort()).toEqual(["runtime/recheckMic", "runtime/retry"]));
+  });
+
+  it("29. the mic recheck never creates an offscreen document, and hello does not wait on it", async () => {
+    await bootWithTab(); // no credential at all: no runtime, no offscreen document
+    expect(fake._offscreenOpen).toBe(false);
+
+    let reply: unknown = "unset";
+    fire({ type: "page/hello" }, SITE_SENDER, (r) => (reply = r));
+    fire({ type: "ui/retry" }, {});
+    await vi.waitFor(() => expect(reply).not.toBe("unset"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fake._offscreenOpen).toBe(false);
+    expect(runtimeTypes()).not.toContain("runtime/recheckMic");
+
+    // A hello from a site that is not allowed is declined and triggers nothing either.
+    fake.sentRuntimeMessages.length = 0;
+    fire({ type: "page/hello" }, { tab: { id: 2, url: "https://evil.example/" }, frameId: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]);
+  });
+
+  it("30. a revoked-while-registered status reaches the page as DENIED / MIC_UNAVAILABLE", async () => {
+    await bootWithTab(ACCOUNT);
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    fake.runtime.onMessage.fire(offscreenStatus(), {}, () => {});
+    fake.sentTabMessages.length = 0;
+
+    // First report of a revoke: still registered (a call may be live), already blocked.
+    fake.runtime.onMessage.fire(
+      offscreenStatus({
+        errors: ["MICROPHONE_BLOCKED"],
+        link: { registration: "up", websocket: "up", microphone: "blocked", media: "idle" },
+        lastError: { code: "MICROPHONE_BLOCKED", reasonPhrase: "permission revoked" }
+      }),
+      {},
+      () => {}
+    );
+    await vi.waitFor(() => expect(fake.sentTabMessages.length).toBeGreaterThan(0));
+    expect(toPageState(lastTabState())).toMatchObject({ microphone: "DENIED", error: "MIC_UNAVAILABLE" });
+
+    // The parked stop that follows keeps the blocker, so the worker keeps its bookkeeping.
+    fake.sentRuntimeMessages.length = 0;
+    fake.runtime.onMessage.fire(
+      offscreenStatus({
+        phase: "stopped",
+        errors: ["MICROPHONE_BLOCKED"],
+        link: { registration: "down", websocket: "down", microphone: "blocked", media: "idle" },
+        lastError: { code: "MICROPHONE_BLOCKED", reasonPhrase: "permission revoked" }
+      }),
+      {},
+      () => {}
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(runtimeTypes()).not.toContain("runtime/start");
+    expect(toPageState(lastTabState())).toMatchObject({ microphone: "DENIED", error: "MIC_UNAVAILABLE" });
+  });
 });

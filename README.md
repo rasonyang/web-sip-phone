@@ -189,7 +189,10 @@ verbatim — the extension derives no transport address from `sipDomain`.
 
 **Microphone.** On provision the extension performs a real `getUserMedia` before registering. If it
 fails, the page sees `microphone: "DENIED"` and `error: "MIC_UNAVAILABLE"`, and no REGISTER is sent.
-Registration retries automatically once access is granted.
+Registration retries automatically once access is granted. The permission is watched for the life
+of the runtime: if it is blocked later while registered, the page sees `DENIED` / `MIC_UNAVAILABLE`,
+the phone unregisters (never mid-call: it waits for the call to end), and it registers again by
+itself on the next grant.
 
 **Deep links.** `chrome-extension://<extensionId>/options.html?site=<hostname>` opens Options on
 Allow Sites with a one-click *Allow &lt;hostname&gt;* button, and closes itself once granted if a page

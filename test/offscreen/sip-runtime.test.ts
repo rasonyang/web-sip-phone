@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OffscreenStatus, RuntimeConfig } from "../../src/shared/messages.js";
+import { CallState } from "../../src/shared/state.js";
 import {
   parseExpiresSeconds,
   SipRuntime,
@@ -18,12 +19,16 @@ vi.mock("../../src/offscreen/media.js", async (importOriginal) => ({
     micAcquireCalls++;
     return Promise.resolve(micAcquireOk);
   },
-  watchMicPermission: (onGranted: () => void) => {
-    micGrantHandler = onGranted;
+  queryMicPermission: () => {
+    if (micQueryThrows) return Promise.resolve(null);
+    return Promise.resolve(micState);
+  },
+  watchMicPermission: (onChange: (state: "granted" | "blocked") => void) => {
+    micGrantHandler = onChange;
     micWatchers++;
     return () => {
       micWatchers--;
-      if (micGrantHandler === onGranted) {
+      if (micGrantHandler === onChange) {
         micGrantHandler = null;
       }
     };
@@ -37,7 +42,9 @@ let micAcquireOk = true;
 /** How often that real capture was attempted; a mic-gate loop shows up here as growth. */
 let micAcquireCalls = 0;
 /** The callback watchMicPermission was handed, so a test can play "the user granted it". */
-let micGrantHandler: (() => void) | null = null;
+let micGrantHandler: ((state: "granted" | "blocked") => void) | null = null;
+/** The permission read behind a recheck failing (queryMicPermission resolves null). */
+let micQueryThrows = false;
 /** Live watcher count: proves a stop() unsubscribes rather than leaking a listener. */
 let micWatchers = 0;
 /** Response handed to the register request delegate; drives expiry and reason-phrase parsing. */
@@ -173,6 +180,7 @@ beforeEach(() => {
   micAcquireCalls = 0;
   micGrantHandler = null;
   micWatchers = 0;
+  micQueryThrows = false;
   lastCfg = null;
   factoryCalls = 0;
   // Zero jitter by default so the timing-sensitive tests stay deterministic; the jitter
@@ -826,11 +834,11 @@ describe("provisioned credential source", () => {
     expect(micGrantHandler).toBeTypeOf("function");
 
     micAcquireOk = true;
-    micGrantHandler!();
+    micGrantHandler!("granted");
     await settle();
     expect(factoryCalls).toBe(1);
     expect(last().phase).toBe("ready");
-    expect(micWatchers).toBe(0); // the watcher is dropped once it has done its job
+    expect(micWatchers).toBe(1); // the watcher lives as long as the runtime
   });
 
   it("a passing microphone test unblocks a gated provisioned start", async () => {
@@ -860,10 +868,10 @@ describe("provisioned credential source", () => {
     await rt.start(PROVISIONED);
     const handler = micGrantHandler!;
     await rt.stop();
-    expect(micWatchers).toBe(0);
+    expect(micWatchers).toBe(1); // stop() retires the credential, not the lifetime watcher
 
     micAcquireOk = true;
-    handler(); // the grant lands after the worker has already given up on this credential
+    handler("granted"); // the grant lands after the worker has already given up on this credential
     await settle();
     expect(factoryCalls).toBe(0);
     expect(last().phase).toBe("stopped");
@@ -875,7 +883,7 @@ describe("provisioned credential source", () => {
     const rt = makeRuntime();
     await rt.start(CONFIG);
     expect(last().phase).toBe("ready");
-    expect(micGrantHandler).toBeNull(); // ...and no watcher is ever armed for it
+    expect(micGrantHandler).toBeTypeOf("function"); // ...and the watcher is armed for every source
 
     // ...while the probe still gates it.
     micState = "blocked";
@@ -911,7 +919,7 @@ describe("provisioned credential source", () => {
     await rt.start({ ...PROVISIONED, username: "2003" });
     await settle();
     expect(micAcquireCalls).toBe(3); // one per start, and not one more
-    expect(micWatchers).toBe(1); // the previous watcher is unsubscribed each time
+    expect(micWatchers).toBe(1); // one lifetime watcher, never re-armed per start
     expect(factoryCalls).toBe(0);
   });
 
@@ -931,7 +939,7 @@ describe("provisioned credential source", () => {
     expect(factoryCalls).toBe(1);
     expect(lastCfg!.username).toBe(PROVISIONED.username);
     expect(last().phase).toBe("ready");
-    expect(micWatchers).toBe(0); // gate cleared: nothing left to listen for
+    expect(micWatchers).toBe(1); // gate cleared; the lifetime watcher stays
   });
 
   it("retry() with the microphone still unusable leaves the start gated and armed", async () => {
@@ -944,7 +952,7 @@ describe("provisioned credential source", () => {
     expect(factoryCalls).toBe(0);
     expect(last().phase).toBe("stopped");
     expect(last().errors).toContain("MICROPHONE_BLOCKED");
-    expect(micWatchers).toBe(1); // still armed for a genuine permission grant
+    expect(micWatchers).toBe(1); // still listening for a genuine permission grant
     expect(micGrantHandler).toBeTypeOf("function");
   });
 
@@ -1034,7 +1042,7 @@ describe("a UA the factory refuses to build", () => {
       expect(factoryCalls).toBe(0); // gated on the microphone, no UA attempted yet
 
       micAcquireOk = true;
-      micGrantHandler!(); // the grant lands; retryAfterMicGrant starts with nobody awaiting it
+      micGrantHandler!("granted"); // the grant lands; retryAfterMicGrant starts with nobody awaiting it
       await settle();
       expect(factoryCalls).toBe(1);
       expect(last().phase).toBe("stopped");
@@ -1044,5 +1052,220 @@ describe("a UA the factory refuses to build", () => {
     }
     await settle();
     expect(unhandled).toEqual([]);
+  });
+});
+
+describe("microphone permission changes while running", () => {
+  const PROVISIONED: RuntimeConfig = {
+    sipUri: "sip:2001@voice.example.com",
+    serverUrl: "wss://voice.example.com:7443/ws",
+    username: "2001",
+    a1Hash: "0123456789abcdef0123456789abcdef",
+    credentialSource: "provisioned",
+    iceServers: []
+  };
+
+  async function settle(ticks = 40) {
+    for (let i = 0; i < ticks; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  /** Drive the call-session callback the runtime hands its manager, as a real call would. */
+  function callState(rt: SipRuntime, state: CallState, inProgress: boolean) {
+    (rt as unknown as { sessions: { deps: { onChange(s: CallState, p: boolean): void } } }).sessions.deps.onChange(
+      state,
+      inProgress
+    );
+  }
+
+  /** The worker treats "stopped without MICROPHONE_BLOCKED" as the blocker clearing. */
+  function expectNeverStoppedUnblocked() {
+    for (const s of statuses) {
+      if (s.phase === "stopped") {
+        expect(s.errors).toContain("MICROPHONE_BLOCKED");
+      }
+    }
+  }
+
+  async function startRunning(config: RuntimeConfig = CONFIG) {
+    const rt = makeRuntime();
+    await rt.start(config);
+    expect(last().link.microphone).toBe("ok");
+    return rt;
+  }
+
+  for (const [name, config] of [
+    ["manual", CONFIG],
+    ["provisioned", PROVISIONED]
+  ] as const) {
+    it(`${name}: revoke drops the registration, parks, and a grant restarts it`, async () => {
+      const rt = await startRunning(config);
+      const firstUa = ua;
+      const firstRegisterer = registerer;
+      const callsBefore = factoryCalls;
+
+      micState = "blocked";
+      micAcquireOk = false;
+      micGrantHandler!("blocked");
+      await settle();
+      expect(firstRegisterer.unregisters).toBe(1);
+      expect(firstUa.stopped).toBe(1);
+      expect(last().phase).toBe("stopped");
+      expect(last().errors).toContain("MICROPHONE_BLOCKED");
+      expect(last().link.microphone).toBe("blocked");
+      expectNeverStoppedUnblocked();
+      // The first report is immediate and says DENIED before the teardown finishes.
+      expect(statuses.find((s) => s.link.microphone === "blocked")!.phase).toBe("ready");
+
+      micState = "granted";
+      micAcquireOk = true;
+      micGrantHandler!("granted");
+      await settle();
+      expect(factoryCalls).toBe(callsBefore + 1);
+      expect(last().phase).toBe("ready");
+      expect(last().errors).not.toContain("MICROPHONE_BLOCKED");
+      expect(last().link.microphone).toBe("ok");
+      expect(lastCfg!.username).toBe(config.username);
+    });
+  }
+
+  it("prompt counts as blocked, never ok", async () => {
+    // watchMicPermission folds every non-granted state into "blocked" (see media.test.ts).
+    await startRunning();
+    micGrantHandler!("blocked");
+    await settle();
+    expect(last().link.microphone).toBe("blocked");
+    expect(last().phase).toBe("stopped");
+    expect(statuses.every((s, i) => i === 0 || s.link.microphone !== "ok" || s.phase !== "stopped")).toBe(true);
+  });
+
+  it("a revoke during a call reports DENIED at once but keeps the call until it ends", async () => {
+    const rt = await startRunning();
+    callState(rt, CallState.Active, true);
+
+    micGrantHandler!("blocked");
+    await settle();
+    expect(last().link.microphone).toBe("blocked");
+    expect(last().errors).toContain("MICROPHONE_BLOCKED");
+    expect(last().phase).toBe("ready");
+    expect(last().callInProgress).toBe(true);
+    expect(registerer.unregisters).toBe(0);
+    expect(ua.stopped).toBe(0);
+
+    callState(rt, CallState.Ended, false);
+    await settle();
+    expect(registerer.unregisters).toBe(1);
+    expect(ua.stopped).toBe(1);
+    expect(last().phase).toBe("stopped");
+    expect(last().errors).toContain("MICROPHONE_BLOCKED");
+    expectNeverStoppedUnblocked();
+  });
+
+  it("a grant before the call ends cancels the deferred stop", async () => {
+    const rt = await startRunning();
+    callState(rt, CallState.Active, true);
+    micGrantHandler!("blocked");
+    micGrantHandler!("granted");
+    expect(last().link.microphone).toBe("ok");
+    expect(last().errors).not.toContain("MICROPHONE_BLOCKED");
+
+    callState(rt, CallState.Ended, false);
+    await settle();
+    expect(registerer.unregisters).toBe(0);
+    expect(ua.stopped).toBe(0);
+    expect(last().phase).toBe("ready");
+  });
+
+  it("a grant arriving while the revoke-stop awaits unregister restarts cleanly", async () => {
+    await startRunning();
+    const firstRegisterer = registerer;
+    let release!: () => void;
+    firstRegisterer.unregister = () => {
+      firstRegisterer.unregisters++;
+      return new Promise<void>((resolve) => (release = resolve));
+    };
+    micGrantHandler!("blocked");
+    await settle();
+    micGrantHandler!("granted");
+    await settle();
+    release();
+    await settle();
+    expect(factoryCalls).toBe(2);
+    expect(last().phase).toBe("ready");
+    expect(last().errors).not.toContain("MICROPHONE_BLOCKED");
+  });
+
+  it("recheck catches a missed change event", async () => {
+    const rt = await startRunning();
+    micState = "blocked"; // no change event delivered
+    await rt.recheckMic();
+    await settle();
+    expect(last().link.microphone).toBe("blocked");
+    expect(last().phase).toBe("stopped");
+    expect(registerer.unregisters).toBe(1);
+
+    micState = "granted";
+    await rt.recheckMic();
+    await settle();
+    expect(last().phase).toBe("ready");
+    expect(last().link.microphone).toBe("ok");
+  });
+
+  it("recheck while permission is unchanged does nothing", async () => {
+    const rt = await startRunning();
+    const count = statuses.length;
+    await rt.recheckMic();
+    expect(statuses.length).toBe(count);
+    expect(factoryCalls).toBe(1);
+  });
+
+  it("a failed permission read changes nothing, running or parked", async () => {
+    const rt = await startRunning();
+    micQueryThrows = true;
+    const count = statuses.length;
+    await expect(rt.recheckMic()).resolves.toBeUndefined();
+    expect(statuses.length).toBe(count);
+    expect(last().link.microphone).toBe("ok");
+
+    micGrantHandler!("blocked");
+    await settle();
+    const calls = factoryCalls;
+    await rt.recheckMic(); // parked; an unreadable permission must not be read as granted
+    await settle();
+    expect(factoryCalls).toBe(calls);
+    expect(last().phase).toBe("stopped");
+  });
+
+  it("subscribes the watcher once across start/stop cycles", async () => {
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    await rt.stop();
+    await rt.start(CONFIG);
+    await rt.stop();
+    await rt.start({ ...CONFIG, password: "other" });
+    expect(micWatchers).toBe(1);
+  });
+
+  it("a manual start blocked at the gate parks and starts itself on the grant", async () => {
+    micState = "blocked";
+    const rt = makeRuntime();
+    await rt.start(CONFIG);
+    expect(factoryCalls).toBe(0);
+    micState = "granted";
+    micGrantHandler!("granted");
+    await settle();
+    expect(factoryCalls).toBe(1);
+    expect(last().phase).toBe("ready");
+  });
+
+  it("an explicit stop while parked retires the config", async () => {
+    const rt = await startRunning();
+    micGrantHandler!("blocked");
+    await settle();
+    await rt.stop();
+    micGrantHandler!("granted");
+    await settle();
+    expect(factoryCalls).toBe(1);
   });
 });
