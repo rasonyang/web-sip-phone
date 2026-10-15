@@ -6,6 +6,16 @@ import type { CredentialSource, DisplayState, ProvisionStatus } from "./state.js
  * A host page pushes a pre-hashed SIP credential in over window.postMessage; the extension
  * answers with registration state only. Nothing on the outbound side ever carries a secret,
  * and nothing on the inbound side is trusted until parsePageMessage has validated it.
+ *
+ * Prerendering. Chrome may run a page, content script included, before the user has navigated
+ * to it. While `document.prerendering` is true the extension answers a `hello` itself (the
+ * hello reply, plus the last state it published if any) and does not ask the service worker
+ * anything: the worker refuses speculative documents, and that refusal must not be mistaken for
+ * "this site is not allowed". One worker check is made when the document is activated
+ * (`prerenderingchange`), however many hellos came in meanwhile, and its answer is handled as
+ * any other. A `provision` or `deprovision` posted during prerender is held, not dropped: only
+ * the latest of them is kept, and it is sent right after that check, so the page provisions
+ * once and the SIP registration is not flushed twice. The page does not need to resend either.
  */
 export const PROTOCOL_VERSION = 1 as const;
 /** `source` on every page → extension message. */

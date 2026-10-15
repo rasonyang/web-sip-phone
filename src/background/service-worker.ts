@@ -522,6 +522,15 @@ async function revokeUngrantedTabs(): Promise<void> {
 }
 
 /**
+ * True for a message sent by a document Chrome is still prerendering. Kept apart from the
+ * Allow Site check because the two mean different things to a hello: a prerendered document is
+ * not yet visible, which is no verdict on the site, whereas an unlisted site is refused.
+ */
+function isPrerenderSender(sender: chrome.runtime.MessageSender): boolean {
+  return (sender as { documentLifecycle?: string }).documentLifecycle === "prerender";
+}
+
+/**
  * The URL a `page/*` message really came from, or null when it did not come from a top-level
  * Allow Site page.
  *
@@ -542,7 +551,7 @@ function pageSenderUrl(sender: chrome.runtime.MessageSender): string | null {
   }
   // A prerendered document is speculative: nobody has seen it and the user has acted on
   // nothing in it. It must not be able to swap the credential out from under the visible page.
-  if ((sender as { documentLifecycle?: string }).documentLifecycle === "prerender") {
+  if (isPrerenderSender(sender)) {
     return null;
   }
   const url = sender.url ?? sender.tab?.url;
@@ -712,6 +721,16 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       // gets the bare decline marker — never a hint about what is configured. It is explicit
       // because the content script treats an empty reply as "no answer" (a worker that woke
       // without a listener), not as a refusal.
+      //
+      // A prerendered sender is neither: it gets no decision at all (an empty reply, the content
+      // script's "no answer"). A decline would make the content script tear itself down for good,
+      // and nothing re-injects it once the page is activated. The content script normally holds
+      // its hello until activation; this is the backstop for one that asks anyway. Nothing else
+      // happens for it either — no mic recheck, no grace window: nobody is looking at that page.
+      if (isPrerenderSender(sender)) {
+        sendResponse();
+        break;
+      }
       const helloUrl = pageSenderUrl(sender);
       sendResponse(helloUrl !== null ? tabState() : ({ declined: true } satisfies HelloReply));
       // Not awaited, like the grace window below: the reply is already out and must not wait.

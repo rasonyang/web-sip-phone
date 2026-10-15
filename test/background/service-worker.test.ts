@@ -908,15 +908,37 @@ describe("host-page provisioning", () => {
     expect(replies[1]).toEqual({ declined: true });
   });
 
-  it("9c. a site not in Allow Sites, a sub-frame and a prerendered document are declined", async () => {
+  it("9c. a site not in Allow Sites and a sub-frame are declined", async () => {
     await bootWithTab();
     const replies: unknown[] = [];
     const respond = (r: unknown) => replies.push(r);
     fire({ type: "page/hello" }, { tab: { id: 3, url: "https://other.example/" }, frameId: 0 }, respond);
     fire({ type: "page/hello" }, { ...SITE_SENDER, frameId: 3 }, respond);
-    fire({ type: "page/hello" }, { ...SITE_SENDER, documentLifecycle: "prerender" }, respond);
-    await vi.waitFor(() => expect(replies).toHaveLength(3));
-    expect(replies).toEqual([{ declined: true }, { declined: true }, { declined: true }]);
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    expect(replies).toEqual([{ declined: true }, { declined: true }]);
+  });
+
+  it("9d. a prerendered document gets no decision: not a decline, no grace window, no provision", async () => {
+    await bootWithTab();
+    const replies: unknown[] = [];
+    const sender = { ...SITE_SENDER, documentLifecycle: "prerender" };
+    vi.useFakeTimers();
+    try {
+      fire({ type: "page/hello" }, sender, (r) => replies.push(r));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replies).toEqual([undefined]);
+      // No grace window was armed for it, so no NOT_RECEIVED fault however long it waits.
+      await vi.advanceTimersByTimeAsync(60_000);
+      const faults = fake.sentRuntimeMessages
+        .filter((m) => (m as { target?: string }).target === "options")
+        .map((m) => (m as { state: DisplayState }).state.details.provisionFault);
+      expect(faults).not.toContain("NOT_RECEIVED");
+    } finally {
+      vi.useRealTimers();
+    }
+    provision(PROV, sender);
+    await settle();
+    expect(starts().length).toBe(0);
   });
 
   it("10. the a1Hash never reaches a broadcast", async () => {

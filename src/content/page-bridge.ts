@@ -4,7 +4,8 @@ import {
   PROTOCOL_VERSION,
   parsePageMessage,
   toPageState,
-  type PageOutbound
+  type PageOutbound,
+  type ProvisionRequest
 } from "../shared/page-protocol.js";
 import type { DisplayState } from "../shared/state.js";
 
@@ -44,7 +45,15 @@ export interface PageBridgeEnv {
   onHello?: () => void;
   /** This page sent a valid `deprovision`. */
   onDeprovision?: () => void;
+  /**
+   * True while the document is being prerendered (the browser runs it before the user has
+   * navigated to it). Absent, read from `win.document.prerendering`.
+   */
+  prerendering?: () => boolean;
 }
+
+/** What a page asked for during prerender, held until the document is activated. */
+type HeldOrder = { kind: "provision"; credential: ProvisionRequest } | { kind: "deprovision" };
 
 /**
  * Relays the page ↔ extension provisioning protocol between the host page and the service
@@ -55,7 +64,10 @@ export interface PageBridgeEnv {
  * dropped without a reply, so a cross-origin frame cannot even probe for the extension.
  * Outbound, nothing but a validated credential crosses into the extension and nothing but
  * mapped registration state crosses back out; the credential itself is handed straight to the
- * worker and never retained, so a later hello cannot read back what a page once pushed in.
+ * worker, so a later hello cannot read back what a page once pushed in. The one exception is a
+ * provision posted while the document is still being prerendered: the worker refuses
+ * speculative documents, so it is held in a private field until activation, sent once, and
+ * cleared there (or on detach). It is never echoed to the page.
  */
 export class PageBridge {
   private readonly env: PageBridgeEnv;
@@ -64,6 +76,10 @@ export class PageBridge {
   /** Serialised form of the last state actually posted, for change detection. */
   private lastPosted: string | null = null;
   private listening = false;
+  /** A worker check is owed: a hello arrived while prerendering and none has been sent since. */
+  private helloOwed = false;
+  /** The latest provision/deprovision posted while prerendering; a later one replaces it. */
+  private held: HeldOrder | null = null;
 
   constructor(env: PageBridgeEnv) {
     this.env = env;
@@ -78,6 +94,7 @@ export class PageBridge {
     root.dataset.webSipPhone = this.env.version;
     if (!this.listening) {
       this.env.win.addEventListener("message", this.onMessage);
+      this.env.win.document.addEventListener("prerenderingchange", this.onActivated);
       this.listening = true;
     }
   }
@@ -85,8 +102,53 @@ export class PageBridge {
   detach(): void {
     if (this.listening) {
       this.env.win.removeEventListener("message", this.onMessage);
+      this.env.win.document.removeEventListener("prerenderingchange", this.onActivated);
       this.listening = false;
     }
+    // Nothing owed to a bridge that is gone, and a held credential must not outlive it.
+    this.helloOwed = false;
+    this.held = null;
+  }
+
+  private isPrerendering(): boolean {
+    if (this.env.prerendering) {
+      return this.env.prerendering();
+    }
+    return (this.env.win.document as Document & { prerendering?: boolean }).prerendering === true;
+  }
+
+  /**
+   * The prerendered document became the visible page. Ask the worker once about every hello
+   * seen meanwhile, then hand over whatever provision/deprovision was held — in that order, so
+   * the worker has judged the site before it is given a credential. The held order goes only
+   * if the check did not end the bridge (a decline detaches and clears it).
+   */
+  private readonly onActivated = (): void => {
+    if (this.isPrerendering()) {
+      return;
+    }
+    void this.activate();
+  };
+
+  private async activate(): Promise<void> {
+    if (this.env.alive && !this.env.alive()) {
+      this.detach();
+      return;
+    }
+    if (this.helloOwed) {
+      this.helloOwed = false;
+      await this.checkWithWorker();
+    }
+    const held = this.held;
+    this.held = null;
+    if (held === null || !this.listening) {
+      return;
+    }
+    this.env.send(
+      held.kind === "provision"
+        ? { target: "background", type: "page/provision", credential: held.credential }
+        : { target: "background", type: "page/deprovision" }
+    );
   }
 
   /**
@@ -130,15 +192,35 @@ export class PageBridge {
           extensionVersion: this.env.version,
           extensionId: this.env.extensionId
         });
-        void this.postCurrentState();
+        if (this.isPrerendering()) {
+          // Answered from what is known here; the worker is asked once, on activation.
+          if (this.last !== null) {
+            this.post(toPageState(this.last));
+          }
+          this.helloOwed = true;
+        } else {
+          void this.postCurrentState();
+        }
         break;
       case "provision":
-        // Handed on immediately and deliberately not stored anywhere: once this returns, the
-        // credential exists only inside the service worker.
-        this.env.send({ target: "background", type: "page/provision", credential: inbound.credential });
+        if (this.isPrerendering()) {
+          // Held, latest wins, sent on activation (see onActivated).
+          this.held = { kind: "provision", credential: inbound.credential };
+        } else {
+          // Handed on immediately and deliberately not stored anywhere: once this returns, the
+          // credential exists only inside the service worker. It also supersedes an order still
+          // held from prerender (activation may be awaiting the worker), which must not follow it.
+          this.held = null;
+          this.env.send({ target: "background", type: "page/provision", credential: inbound.credential });
+        }
         break;
       case "deprovision":
-        this.env.send({ target: "background", type: "page/deprovision" });
+        if (this.isPrerendering()) {
+          this.held = { kind: "deprovision" };
+        } else {
+          this.held = null;
+          this.env.send({ target: "background", type: "page/deprovision" });
+        }
         this.env.onDeprovision?.();
         break;
     }
@@ -162,6 +244,11 @@ export class PageBridge {
     if (this.last !== null) {
       this.post(toPageState(this.last));
     }
+    await this.checkWithWorker();
+  }
+
+  /** The worker half of a hello: ask, then publish, tear down on a decline, or do nothing. */
+  private async checkWithWorker(): Promise<void> {
     const ts = await this.env.request({ target: "background", type: "page/hello" });
     if (!this.listening) {
       return; // detached while the worker was answering (replaced, or the context went away)
