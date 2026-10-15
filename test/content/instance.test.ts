@@ -588,3 +588,85 @@ describe("visibility across instance replacement", () => {
     expect(shown()).toBe(true);
   });
 });
+
+describe("activation of a prerendered page", () => {
+  const retries = () => fake.sentRuntimeMessages.filter((m) => (m as Msg).type === "ui/retry");
+  const getStates = () => fake.sentRuntimeMessages.filter((m) => (m as Msg).type === "ui/getState");
+  let visibility: "hidden" | "visible";
+
+  beforeEach(() => {
+    visibility = "hidden";
+    Object.defineProperty(document, "prerendering", { configurable: true, value: true });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+  });
+
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).prerendering;
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  /** Mount while prerendering with the worker having answered REGISTERING, then activate. */
+  async function activate(fresh: unknown): Promise<void> {
+    reply = { state: displayState({ runtime: RuntimeState.Registering }), pos: null };
+    mount();
+    await flush();
+    reply = fresh;
+    Object.defineProperty(document, "prerendering", { configurable: true, value: false });
+    visibility = "visible";
+    document.dispatchEvent(new Event("prerenderingchange"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flush();
+  }
+
+  it("does not retry on the state cached during prerender when the fresh state is healthy", async () => {
+    await activate({ state: displayState(), pos: null });
+    expect(getStates()).toHaveLength(2);
+    expect(retries()).toHaveLength(0);
+    // The cached state no longer blocks later nudges either.
+    await vi.advanceTimersByTimeAsync(20_000);
+    window.dispatchEvent(new Event("focus"));
+    expect(retries()).toHaveLength(0);
+  });
+
+  it("nudges exactly once when the fresh state is unhealthy", async () => {
+    await activate({ state: displayState({ runtime: RuntimeState.Registering }), pos: null });
+    expect(retries()).toHaveLength(1);
+    window.dispatchEvent(new Event("focus"));
+    expect(retries()).toHaveLength(1);
+  });
+
+  it("nudges for a fresh error state", async () => {
+    await activate({ state: displayState({ error: "registration failed" as never }), pos: null });
+    expect(retries()).toHaveLength(1);
+  });
+
+  it("does not nudge from the stale state when the worker gives no answer", async () => {
+    await activate(null);
+    expect(retries()).toHaveLength(0);
+    window.dispatchEvent(new Event("focus"));
+    expect(retries()).toHaveLength(0);
+  });
+
+  it("a broadcast after activation makes the state trustworthy again", async () => {
+    await activate(null);
+    broadcast(displayState({ runtime: RuntimeState.Registering }));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(retries()).toHaveLength(1);
+  });
+
+  it("a normal page still nudges on an unhealthy state", async () => {
+    delete (document as unknown as Record<string, unknown>).prerendering;
+    visibility = "visible";
+    reply = { state: displayState({ runtime: RuntimeState.Registering }), pos: null };
+    mount();
+    await flush();
+    expect(retries()).toHaveLength(1);
+  });
+
+  it("removes the activation listener on teardown", async () => {
+    const rm = vi.spyOn(document, "removeEventListener");
+    const instance = mount();
+    instance.teardown();
+    expect(rm.mock.calls.map((c) => c[0])).toContain("prerenderingchange");
+  });
+});
