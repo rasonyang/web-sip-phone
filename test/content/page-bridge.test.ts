@@ -522,3 +522,225 @@ describe("PageBridge liveness", () => {
     expect(posts).toEqual([]);
   });
 });
+
+describe("PageBridge prerendering", () => {
+  let prerendering: boolean;
+  let pb: PageBridge;
+  const hello = (nonce: string) => ({ source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "hello", nonce });
+  const deprovisionMsg = { source: PAGE_SOURCE, protocolVersion: PROTOCOL_VERSION, type: "deprovision" };
+  /** The document becomes the visible page. */
+  const activate = async (): Promise<void> => {
+    prerendering = false;
+    document.dispatchEvent(new Event("prerenderingchange"));
+    await flush();
+  };
+
+  beforeEach(() => {
+    prerendering = true;
+    // The outer bridge would answer and ask the worker too; only this one listens.
+    bridge.detach();
+    pb = new PageBridge({
+      win: window,
+      version: VERSION,
+      extensionId: EXT_ID,
+      send: (msg) => {
+        sent.push(msg);
+        order.push(msg.type);
+      },
+      request: (msg) => {
+        requested.push(msg);
+        order.push(msg.type);
+        return Promise.resolve(requestResult);
+      },
+      prerendering: () => prerendering,
+      onDeclined: () => {
+        delete document.documentElement.dataset.webSipPhone;
+        pb.detach();
+      }
+    });
+    order = [];
+    pb.attach();
+  });
+  afterEach(() => pb.detach());
+  let order: string[];
+
+  it("answers a hello at once, asks the worker nothing, and keeps the marker", async () => {
+    fromPage(hello("n-1"));
+    await flush();
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ type: "hello", nonce: "n-1" });
+    expect(requested).toEqual([]);
+    expect(document.documentElement.dataset.webSipPhone).toBe(VERSION);
+  });
+
+  it("asks the worker exactly once on activation, however many hellos came in", async () => {
+    fromPage(hello("n-1"));
+    fromPage(hello("n-2"));
+    await flush();
+    expect(posts).toHaveLength(2);
+    expect(requested).toEqual([]);
+
+    await activate();
+    expect(requested).toEqual([{ target: "background", type: "page/hello" }]);
+    expect(posts.at(-1)).toMatchObject({ type: "state", registration: "REGISTERED" });
+
+    // Owed once: a second change event, or a late one, asks nothing more.
+    await activate();
+    expect(requested).toHaveLength(1);
+  });
+
+  it("asks nothing on activation when no hello was seen", async () => {
+    await activate();
+    expect(requested).toEqual([]);
+  });
+
+  it("tears down as before when the worker declines after activation", async () => {
+    requestResult = "declined";
+    fromPage(hello("n-1"));
+    await flush();
+    expect(document.documentElement.dataset.webSipPhone).toBe(VERSION);
+
+    await activate();
+    expect(requested).toHaveLength(1);
+    expect(document.documentElement.dataset.webSipPhone).toBeUndefined();
+    posts = [];
+    fromPage(hello("n-2"));
+    await flush();
+    expect(posts).toEqual([]);
+  });
+
+  it("leaves things alone when the worker gives no answer after activation", async () => {
+    requestResult = null;
+    fromPage(hello("n-1"));
+    await activate();
+    expect(document.documentElement.dataset.webSipPhone).toBe(VERSION);
+    posts = [];
+    fromPage(hello("n-2"));
+    await flush();
+    expect(posts).toHaveLength(1);
+  });
+
+  it("holds a provision until activation, then sends it once, after the page/hello", async () => {
+    fromPage(hello("n-1"));
+    fromPage(provisionMessage());
+    await flush();
+    expect(sent).toEqual([]);
+    expect(posts.some((p) => JSON.stringify(p).includes(A1))).toBe(false);
+
+    await activate();
+    expect(order).toEqual(["page/hello", "page/provision"]);
+    expect(sent).toHaveLength(1);
+
+    await activate();
+    expect(sent).toHaveLength(1);
+    // Cleared once sent: nothing of it remains in the bridge.
+    expect(reachableStrings(pb)).not.toContain(A1);
+  });
+
+  it("keeps only the latest of provision and deprovision", async () => {
+    fromPage(provisionMessage());
+    fromPage(deprovisionMsg);
+    await flush();
+    expect(sent).toEqual([]);
+    await activate();
+    expect(sent).toEqual([{ target: "background", type: "page/deprovision" }]);
+
+    sent = [];
+    prerendering = true;
+    fromPage(deprovisionMsg);
+    fromPage(provisionMessage({ nonce: "n-2" }));
+    fromPage(provisionMessage({ nonce: "n-3", account: "1002" }));
+    await activate();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: "page/provision", credential: { account: "1002" } });
+  });
+
+  it("does not send a held order when the worker declined the site", async () => {
+    requestResult = "declined";
+    fromPage(hello("n-1"));
+    fromPage(provisionMessage());
+    await activate();
+    expect(sent).toEqual([]);
+  });
+
+  it("drops a held order superseded by one posted while activation awaits the worker", async () => {
+    let answer!: (v: null) => void;
+    pb.detach();
+    pb = new PageBridge({
+      win: window,
+      version: VERSION,
+      extensionId: EXT_ID,
+      send: (msg) => sent.push(msg),
+      request: () => new Promise((resolve) => (answer = resolve)),
+      prerendering: () => prerendering
+    });
+    pb.attach();
+    fromPage(hello("n-1"));
+    fromPage(provisionMessage({ account: "1001" }));
+    await flush();
+    prerendering = false;
+    document.dispatchEvent(new Event("prerenderingchange"));
+    fromPage(provisionMessage({ nonce: "n-2", account: "1002" }));
+    await flush();
+    answer(null);
+    await flush();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: "page/provision", credential: { account: "1002" } });
+  });
+
+  it("fires onDeprovision at once for a deprovision posted while prerendering", async () => {
+    let n = 0;
+    pb.detach();
+    pb = new PageBridge({
+      win: window,
+      version: VERSION,
+      extensionId: EXT_ID,
+      send: () => {},
+      request: () => Promise.resolve(null),
+      prerendering: () => true,
+      onDeprovision: () => n++
+    });
+    pb.attach();
+    fromPage(deprovisionMsg);
+    expect(n).toBe(1);
+  });
+
+  it("sends nothing on a later prerenderingchange after detach", async () => {
+    fromPage(hello("n-1"));
+    fromPage(provisionMessage());
+    await flush();
+    pb.detach();
+    await activate();
+    expect(requested).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
+  it("reads document.prerendering when no hook is injected", async () => {
+    pb.detach();
+    const doc = document as Document & { prerendering?: boolean };
+    doc.prerendering = true;
+    try {
+      const plain = new PageBridge({
+        win: window,
+        version: VERSION,
+        extensionId: EXT_ID,
+        send: (m) => sent.push(m),
+        request: (m) => {
+          requested.push(m);
+          return Promise.resolve(requestResult);
+        }
+      });
+      plain.attach();
+      fromPage(hello("n-1"));
+      await flush();
+      expect(requested).toEqual([]);
+      doc.prerendering = false;
+      document.dispatchEvent(new Event("prerenderingchange"));
+      await flush();
+      expect(requested).toHaveLength(1);
+      plain.detach();
+    } finally {
+      delete doc.prerendering;
+    }
+  });
+});

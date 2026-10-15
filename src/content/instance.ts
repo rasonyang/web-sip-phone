@@ -21,6 +21,10 @@ export const HOST_ID = "web-sip-phone-host";
  */
 export const REPLACE_EVENT = "web-sip-phone:replace";
 
+function isPrerendering(): boolean {
+  return (document as Document & { prerendering?: boolean }).prerendering === true;
+}
+
 export interface WebSipPhoneInstance {
   /** Remove every trace of this instance from the page. Idempotent. */
   teardown(): void;
@@ -190,6 +194,9 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
     gotState = true;
     lastPos = ts.pos;
     lastState = ts.state;
+    // Whatever arrives while the document is still speculative may go stale unseen: broadcasts
+    // appear to target the tab's visible document, so a prerendered one is not updated again.
+    stateFromPrerender = isPrerendering();
     viewRef.update(ts.state);
     syncVisibility();
     bridgeRef.publish(ts.state);
@@ -207,6 +214,8 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   // spam the runtime, and a no-op whenever the link is healthy.
   const NUDGE_MIN_INTERVAL_MS = 10000;
   let lastNudgeAt = 0;
+  // True while lastState was cached during prerender and nothing newer has landed since.
+  let stateFromPrerender = false;
   function maybeNudgeRecovery(): void {
     // Also the moment an orphan notices it is one: a returning user must not keep looking at a
     // widget frozen at whatever it showed when the extension went away.
@@ -214,6 +223,12 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
       return;
     }
     if (document.visibilityState !== "visible" || !lastState) {
+      return;
+    }
+    // A state cached during prerender says nothing about the link now: the worker may have been
+    // mid-REGISTER when the speculative document woke it. Judging it would send a needless retry
+    // right after activation; the fresh fetch below nudges instead, if the fresh state needs it.
+    if (stateFromPrerender) {
       return;
     }
     const s = lastState;
@@ -234,6 +249,20 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   }
   document.addEventListener("visibilitychange", maybeNudgeRecovery);
   window.addEventListener("focus", maybeNudgeRecovery);
+
+  // On activation the cached state is replaced by a fresh one before any nudge is judged. No
+  // answer (worker asleep) leaves the stale flag set: the next real state update, or the next
+  // visibility change after one, takes over rather than acting on a state known to be old.
+  function onActivated(): void {
+    void guard.request({ target: "background", type: "ui/getState" } satisfies Msg).then((answer) => {
+      if (disposed || !isTabState(answer?.reply)) {
+        return;
+      }
+      applyTabState(answer.reply);
+      maybeNudgeRecovery();
+    });
+  }
+  document.addEventListener("prerenderingchange", onActivated);
 
   onRuntimeMessage = (raw: unknown): boolean => {
     if (isMsg(raw) && raw.target === "content") {
@@ -359,6 +388,7 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
     timers.clear();
     document.removeEventListener("visibilitychange", maybeNudgeRecovery);
     window.removeEventListener("focus", maybeNudgeRecovery);
+    document.removeEventListener("prerenderingchange", onActivated);
     if (onResize) {
       window.removeEventListener("resize", onResize);
     }
