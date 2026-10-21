@@ -86,9 +86,18 @@ export type Msg =
   | { target: "background"; type: "page/hello" }
   | { target: "background"; type: "page/provision"; credential: ProvisionRequest }
   | { target: "background"; type: "page/deprovision" }
+  // A content script reporting that it is live, in answer to `site/recheck` (or on activation
+  // of a prerendered page). The worker judges the message's `sender` — the one thing about it
+  // Chrome never scrubs — and answers with `site/revoked` when that document's site is no longer
+  // allowed; any other reply, or none, leaves the content script in place.
+  | { target: "background"; type: "site/checkIn" }
   | { target: "content"; type: "mic/level"; level: number }
-  // This tab's site is no longer an Allow Site: the content script removes its widget, the
-  // presence marker and the page bridge.
+  // "Check in, please": sent to every open tab when an Allow Site or a host permission goes
+  // away, because without the `tabs` permission the worker cannot see which tabs show the site.
+  | { target: "content"; type: "site/recheck" }
+  // This tab's site is no longer an Allow Site (or its host permission was revoked): the content
+  // script removes its widget, the presence marker and the page bridge. The worker sends it as
+  // its answer to a `site/checkIn`; one arriving as a pushed message is honoured the same way.
   | { target: "content"; type: "site/revoked" }
   | { target: "content"; type: "state/update"; state: DisplayState; pos: StoredDotPosition | null }
   | { target: "options"; type: "state/update"; state: DisplayState };

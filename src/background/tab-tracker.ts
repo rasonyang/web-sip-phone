@@ -1,6 +1,13 @@
 import { urlMatchesAllowSite } from "../shared/allow-sites.js";
 
-/** Tracks which open tabs are top-level Allow Site pages. Window count is irrelevant; tabs are global. */
+/**
+ * Tracks which open tabs are top-level Allow Site pages. Window count is irrelevant; tabs are global.
+ *
+ * The extension holds no `tabs` permission, so Chrome shows a tab's URL only while the extension
+ * has host permission for it. Everything here reads a missing URL as "not an Allow Site tab",
+ * which is the truth: an unlisted site, or a listed one whose permission was revoked (the content
+ * script cannot run there, so nothing on that tab needs the runtime).
+ */
 export class TabTracker {
   private tabs = new Set<number>();
   private listeners: Array<() => void> = [];
@@ -14,6 +21,9 @@ export class TabTracker {
       }
     });
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      // Leaving an Allow Site for a site the extension has no permission for arrives scrubbed:
+      // `{ status: "loading" }` with no `url`, and a `tab` with none either. That is a loading
+      // event, so it is evaluated — and a missing URL drops the tab, as it should.
       if (changeInfo.url === undefined && changeInfo.status !== "loading") {
         return;
       }
@@ -22,7 +32,10 @@ export class TabTracker {
     await this.refresh();
   }
 
-  /** Re-scan all tabs; call after the Allow Sites list changes. */
+  /**
+   * Re-scan all tabs; call after the Allow Sites list or a host permission changes. A tab whose
+   * URL Chrome hides never counts.
+   */
   async refresh(): Promise<void> {
     const all = await chrome.tabs.query({});
     this.tabs.clear();

@@ -52,6 +52,34 @@ describe("TabTracker", () => {
     expect(tracker.count()).toBe(0);
   });
 
+  it("a scrubbed navigation away from an Allow Site (no url, no tab url) drops the tab", async () => {
+    // No `tabs` permission: only the granted Allow Site's URLs are shown to the extension.
+    fake._grantedOrigins = ["https://crm.example.com/*"];
+    const { tracker } = await makeTracker();
+    fake._openTab(1, "https://crm.example.com/");
+    expect(tracker.count()).toBe(1);
+    const seen: unknown[] = [];
+    fake.tabs.onUpdated.addListener((_id, changeInfo, tab) => seen.push({ changeInfo, tab }));
+    fake._navigateTab(1, "https://other.example.com/");
+    expect(seen).toEqual([{ changeInfo: { status: "loading" }, tab: { id: 1 } }]);
+    expect(tracker.count()).toBe(0);
+    // And back: the granted URL is shown again, and the tab counts again.
+    fake._navigateTab(1, "https://crm.example.com/again");
+    expect(tracker.count()).toBe(1);
+  });
+
+  it("a rescan never counts a tab whose URL is hidden, Allow Site or not", async () => {
+    fake._grantedOrigins = ["https://crm.example.com/*"];
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/a" });
+    fake._tabs.push({ id: 2, url: "https://other.example.com/" });
+    const { tracker } = await makeTracker();
+    expect(tracker.ids()).toEqual([1]);
+    // The Allow Site's permission revoked: its URL is hidden now, so it stops counting.
+    await fake.permissions.remove({ origins: ["https://crm.example.com/*"] });
+    await tracker.refresh();
+    expect(tracker.count()).toBe(0);
+  });
+
   it("does not fire change for irrelevant tabs", async () => {
     const { changes } = await makeTracker();
     const before = changes();

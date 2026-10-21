@@ -434,6 +434,19 @@ async function doSyncContentScripts(): Promise<void> {
 }
 
 /**
+ * Whether the user has granted the host permission for `url`'s origin; null when Chrome cannot
+ * say (a malformed URL, a throwing call). Each caller decides what an unanswerable question
+ * means for it: refusal where the sender asks for something, leaving alone where it does not.
+ */
+async function originGranted(url: string): Promise<boolean | null> {
+  try {
+    return await chrome.permissions.contains({ origins: [`${new URL(url).origin}/*`] });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Inject the content script into every open tab already showing one of `sites`.
  *
  * A registered content script only runs on the next navigation, so without this a tab that was
@@ -441,9 +454,11 @@ async function doSyncContentScripts(): Promise<void> {
  * shows nothing until the user refreshes it — and after an update its old content script is
  * orphaned. The injected instance replaces any earlier one itself (content/instance.ts).
  *
- * Only tabs whose origin the user has actually granted: a site can sit in Allow Sites with its
- * host permission since revoked. Every tab stands alone — a discarded tab, a navigation racing
- * the injection or an error page must not keep the others from getting the script.
+ * The extension holds no `tabs` permission, so `tab.url` is there only for origins it has host
+ * permission for: a tab with no URL is one it could not inject into anyway. The explicit grant
+ * check stays all the same — it is the actual precondition, and it does not lean on how Chrome
+ * scrubs a tab. Every tab stands alone — a discarded tab, a navigation racing the injection or an
+ * error page must not keep the others from getting the script.
  */
 async function injectIntoOpenTabs(sites: string[]): Promise<void> {
   if (sites.length === 0) {
@@ -455,11 +470,10 @@ async function injectIntoOpenTabs(sites: string[]): Promise<void> {
       if (tab.id === undefined || !tab.url || !urlMatchesAllowSite(tab.url, sites)) {
         return;
       }
+      if ((await originGranted(tab.url)) !== true) {
+        return;
+      }
       try {
-        const granted = await chrome.permissions.contains({ origins: [`${new URL(tab.url).origin}/*`] });
-        if (!granted) {
-          return;
-        }
         await chrome.scripting.executeScript({
           target: { tabId: tab.id, allFrames: CONTENT_SCRIPT.allFrames },
           files: [...CONTENT_SCRIPT.js]
@@ -471,54 +485,59 @@ async function injectIntoOpenTabs(sites: string[]): Promise<void> {
   );
 }
 
-/** Tell the content script in each `tabIds` tab that its site is no longer allowed. */
-function revokeTabs(tabIds: number[]): void {
-  const msg: Msg = { target: "content", type: "site/revoked" };
-  for (const tabId of tabIds) {
-    // A tab with no content script (never injected, already torn down) simply has no receiver.
-    void chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+/**
+ * Ask the content script in every open tab to check in, so the ones whose site is no longer
+ * allowed can be told to withdraw (the `site/checkIn` handler).
+ *
+ * Every tab, not the ones that look like they are on a removed site: the extension holds no
+ * `tabs` permission, and Chrome hides a tab's URL the moment its host permission goes — which is
+ * precisely when this runs. A revoke in chrome://extensions leaves nothing to filter on, and so,
+ * usually, does Options' Remove, which revokes the permission right after telling us. The
+ * check-in's `sender.url` is never hidden, so the verdict waits for that instead. It needs no
+ * memory of which tabs were where, so a worker woken cold by the removal does it just as well.
+ *
+ * A tab with no content script (any other site, an Allow Site already torn down) has no receiver
+ * and simply rejects. Frame targeting is left to Chrome: the message reaches every frame of the
+ * tab's visible page, and each content script found there answers for its own document.
+ */
+async function recheckOpenTabs(): Promise<void> {
+  const tabs = await chrome.tabs.query({});
+  const msg: Msg = { target: "content", type: "site/recheck" };
+  for (const tab of tabs) {
+    if (tab.id !== undefined) {
+      void chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+    }
   }
 }
 
 /**
- * Withdraw the widget and presence marker from open tabs on sites just removed from Allow Sites.
- * The removed tab gets no broadcasts any more, so without this its content script would keep
- * showing the last state — and the page would see the marker — until the page happened to say
- * hello and be declined.
+ * True when the document that sent a `site/checkIn` is on a site that is no longer allowed: off
+ * the Allow Sites list, or with its host permission revoked (chrome://extensions, the toolbar
+ * menu, or Options' Remove). Judged on `sender.url`, which Chrome never scrubs and which belongs
+ * to the very document that asked — so the answer, sent back as the reply, reaches that document
+ * and no other, whichever frame or tab it sits in.
+ *
+ * Judged against the list as this worker holds it. That is what settles Options' Remove: Options
+ * saves the list before it says `config/changed` and revokes the permission after, and the
+ * re-check goes out only once the handler has loaded the saved list — so the removed site is
+ * refused on the list alone, however early the permission went. A permission revoked before the
+ * list is reloaded fails the grant check instead.
+ *
+ * A prerendered sender is judged like any other. Prerendering is no verdict on the site — that is
+ * why a prerendered hello gets no decision — but this question is not about the document at all:
+ * a removed or ungranted site is gone for a speculative document too, nothing will re-inject it,
+ * and a still-allowed one is kept. A missing URL, or a grant Chrome cannot answer, is likewise no
+ * verdict, and the content script is left alone.
  */
-async function revokeOpenTabs(sites: string[]): Promise<void> {
-  if (sites.length === 0) {
-    return;
+async function senderSiteWithdrawn(sender: chrome.runtime.MessageSender): Promise<boolean> {
+  const url = sender.url ?? sender.tab?.url;
+  if (typeof url !== "string") {
+    return false;
   }
-  const tabs = await chrome.tabs.query({});
-  revokeTabs(
-    tabs.filter((t) => t.id !== undefined && t.url && urlMatchesAllowSite(t.url, sites)).map((t) => t.id!)
-  );
-}
-
-/**
- * Host permission revoked outside Options (chrome://extensions, the toolbar menu) while the site
- * stays in Allow Sites. The registered script can no longer run there, so open tabs whose origin
- * is no longer granted are withdrawn the same way a removed site's are.
- */
-async function revokeUngrantedTabs(): Promise<void> {
-  const tabs = await chrome.tabs.query({});
-  const ungranted: number[] = [];
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id === undefined || !tab.url || !urlMatchesAllowSite(tab.url, config.allowSites)) {
-        return;
-      }
-      try {
-        if (!(await chrome.permissions.contains({ origins: [`${new URL(tab.url).origin}/*`] }))) {
-          ungranted.push(tab.id);
-        }
-      } catch {
-        // Unanswerable for this tab; leave it alone.
-      }
-    })
-  );
-  revokeTabs(ungranted);
+  if (!urlMatchesAllowSite(url, config.allowSites)) {
+    return true;
+  }
+  return (await originGranted(url)) === false;
 }
 
 /**
@@ -532,7 +551,7 @@ function isPrerenderSender(sender: chrome.runtime.MessageSender): boolean {
 
 /**
  * The URL a `page/*` message really came from, or null when it did not come from a top-level
- * Allow Site page.
+ * Allow Site page whose host permission is still granted.
  *
  * The content script relays on behalf of a page, and `sender` is the one part of the message a
  * page cannot forge: Chrome fills it in. Requiring the sending *document's* URL to match an
@@ -540,12 +559,18 @@ function isPrerenderSender(sender: chrome.runtime.MessageSender): boolean {
  * keeps an iframe embedded in an Allow Site page (which the top-level page never vouched for)
  * from doing it.
  *
+ * The host permission is required as well: a site can stay in Allow Sites with its permission
+ * revoked in chrome://extensions, and its already-running content script outlives the revoke
+ * until the re-check withdraws it. The user took the site away from the extension; a page there
+ * must not read state or hand over a credential in the meantime. A grant Chrome cannot answer
+ * counts as not granted.
+ *
  * `frameId` must be exactly 0 — an absent one is not evidence of a main frame, and treating it
  * as one would accept whatever context the browser declined to place. `sender.url` is preferred
  * over `sender.tab.url` because they can differ: `tab.url` is the tab's top-level document,
  * which a subframe or a mid-navigation document does not share.
  */
-function pageSenderUrl(sender: chrome.runtime.MessageSender): string | null {
+async function pageSenderUrl(sender: chrome.runtime.MessageSender): Promise<string | null> {
   if (sender.frameId !== 0) {
     return null;
   }
@@ -556,6 +581,9 @@ function pageSenderUrl(sender: chrome.runtime.MessageSender): string | null {
   }
   const url = sender.url ?? sender.tab?.url;
   if (typeof url !== "string" || !urlMatchesAllowSite(url, config.allowSites)) {
+    return null;
+  }
+  if ((await originGranted(url)) !== true) {
     return null;
   }
   return url;
@@ -702,10 +730,21 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       } finally {
         // After evaluate(), so an injected script's ui/getState is answered with the new state.
         await injectIntoOpenTabs(toInject);
-        await revokeOpenTabs(toRevoke);
+        // The removed sites are not passed on: the re-check cannot find their tabs by URL (see
+        // recheckOpenTabs), and the check-ins are judged against the list loaded above.
+        if (toRevoke.length > 0) {
+          await recheckOpenTabs();
+        }
       }
       break;
     }
+    case "site/checkIn":
+      // A content script answering a re-check, or a prerendered page just activated. The reply
+      // is the verdict; the content script reads anything but `site/revoked` as "stay".
+      sendResponse(
+        (await senderSiteWithdrawn(sender)) ? ({ target: "content", type: "site/revoked" } satisfies Msg) : undefined
+      );
+      break;
     case "ui/resync":
       // The user asking "try again" from Options. Nothing is sent to the page — a re-sync is a
       // fresh state broadcast, which every Allow Site tab republishes to its page, and it is
@@ -731,7 +770,7 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
         sendResponse();
         break;
       }
-      const helloUrl = pageSenderUrl(sender);
+      const helloUrl = await pageSenderUrl(sender);
       sendResponse(helloUrl !== null ? tabState() : ({ declined: true } satisfies HelloReply));
       // Not awaited, like the grace window below: the reply is already out and must not wait.
       if (helloUrl !== null) {
@@ -748,7 +787,7 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       break;
     }
     case "page/provision": {
-      const senderUrl = pageSenderUrl(sender);
+      const senderUrl = await pageSenderUrl(sender);
       if (senderUrl === null) {
         break;
       }
@@ -778,7 +817,7 @@ async function handleMessage(msg: Msg, sender: chrome.runtime.MessageSender, sen
       break;
     }
     case "page/deprovision":
-      if (pageSenderUrl(sender) === null) {
+      if ((await pageSenderUrl(sender)) === null) {
         break;
       }
       await queueProvisionOp(async () => {
@@ -831,8 +870,18 @@ async function doInit(): Promise<void> {
       void initServiceWorker().then(() => injectIntoOpenTabs(config.allowSites));
     }
   });
+  // Host permission revoked outside Options (chrome://extensions, the toolbar menu) while the
+  // site stays in Allow Sites, or by Options' own Remove. The registered script can no longer
+  // run there, so its open tabs are withdrawn the same way a removed site's are. The tracker is
+  // re-scanned too: Chrome now hides those tabs' URLs, so they stop counting as Allow Site tabs
+  // now rather than at their next navigation.
   chrome.permissions.onRemoved.addListener(() => {
-    void initServiceWorker().then(() => revokeUngrantedTabs());
+    void initServiceWorker()
+      .then(async () => {
+        await recheckOpenTabs();
+        await tracker.refresh();
+      })
+      .catch((e) => console.warn("[WebSipPhone] permission removal not fully applied", e));
   });
 
   chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
@@ -841,7 +890,8 @@ async function doInit(): Promise<void> {
     }
     // Every handler waits on the same settled promise, so arrival order is preserved.
     void ready.then(() => handleMessage(raw, sender, sendResponse));
-    return raw.type === "ui/getState" || raw.type === "page/hello"; // async response only for these
+    // Async response only for these.
+    return raw.type === "ui/getState" || raw.type === "page/hello" || raw.type === "site/checkIn";
   });
   // A closed tab takes its panel with it; otherwise metering would run for a ghost.
   chrome.tabs.onRemoved.addListener((tabId) => {

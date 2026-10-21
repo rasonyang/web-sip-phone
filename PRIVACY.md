@@ -28,9 +28,10 @@ shows its connection status on websites you explicitly allow.
 
 - `storage` — save your settings locally.
 - `offscreen` — host the SIP/WebRTC engine required by Manifest V3.
-- `scripting` / `tabs` — inject the status widget only into your allowed sites and register only
-  while one of them is open.
-- Per-site host access is requested at the moment you add a site, never at install time.
+- `scripting` — inject the status widget only into your allowed sites.
+- Per-site host access is requested at the moment you add a site, never at install time. It is
+  also what lets the extension tell whether one of your allowed sites is open in a tab, so that it
+  registers only while one is. The extension cannot see the address of any other tab.
 
 ## Contact
 

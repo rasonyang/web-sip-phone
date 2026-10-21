@@ -154,8 +154,13 @@ Expected requirements:
 * `storage`
 * `offscreen`
 * `scripting`
-* `tabs`
 * Any other minimal permissions required
+
+Not `tabs`: it adds the install warning "Read your browsing history", and nothing needs it. The
+per-site host permission already shows the extension the URL of every tab on an Allow Site, which
+is all the tab tracking and injection read. A tab whose permission is gone hides its URL, so
+withdrawing from it cannot look for it by URL: every open tab is asked to check in, and the
+service worker judges the check-in by its sender, which Chrome never hides.
 
 Allow Sites use dynamically requested `optional_host_permissions`.
 
