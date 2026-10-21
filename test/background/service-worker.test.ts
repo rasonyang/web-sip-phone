@@ -388,11 +388,42 @@ describe("content script + install", () => {
 });
 
 describe("revoking open tabs", () => {
-  const revokedTabs = () =>
-    fake.sentTabMessages
-      .filter((m) => (m.message as { type?: string }).type === "site/revoked")
-      .map((m) => m.tabId)
-      .sort();
+  /**
+   * The content scripts: tab ids with a live instance. Each answers a re-check by checking in,
+   * as the real one does, with the sender Chrome would attach (never scrubbed), and withdraws on
+   * a `site/revoked` — the worker's reply, or a pushed one, so the tests do not care which.
+   */
+  let live: Set<number>;
+  let revoked: number[];
+  const revokedTabs = () => [...revoked].sort();
+  const rechecks = () => fake.sentTabMessages.filter((m) => (m.message as { type?: string }).type === "site/recheck");
+  const withdraw = (tabId: number) => {
+    if (live.delete(tabId)) {
+      revoked.push(tabId);
+    }
+  };
+  beforeEach(() => {
+    live = new Set();
+    revoked = [];
+    fake._tabMessageHandler = (tabId, message) => {
+      const type = (message as { type?: string }).type;
+      if (!live.has(tabId)) {
+        return undefined;
+      }
+      if (type === "site/revoked") {
+        withdraw(tabId);
+      } else if (type === "site/recheck") {
+        fake.runtime.onMessage.fire({ target: "background", type: "site/checkIn" }, fake._senderFor(tabId), (reply) => {
+          if ((reply as { type?: string } | undefined)?.type === "site/revoked") {
+            withdraw(tabId);
+          }
+        });
+      }
+      return undefined;
+    };
+  });
+  /** Options' Remove revokes the permission right after `config/changed`: model it landing first. */
+  const revokePermission = (host: string) => fake.permissions.remove({ origins: [`https://${host}/*`] });
 
   it("removing a site revokes its open tabs only, and a change that removes nothing revokes nowhere", async () => {
     fake._tabs.push(
@@ -401,15 +432,37 @@ describe("revoking open tabs", () => {
       { id: 3, url: "https://other.example.com/" }
     );
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+    live = new Set([1, 2]);
 
     seedConfig({ account: { ...ACCOUNT, username: "1002" }, allowSites: ["crm.example.com", "app.example.com"] });
     fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
     await new Promise((r) => setTimeout(r, 20));
     expect(revokedTabs()).toEqual([]);
+    expect(rechecks()).toEqual([]);
 
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    // Already hidden from tabs.query by the time the worker asks: only the check-in can tell.
+    await revokePermission("app.example.com");
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([2]));
+    // Every tab is asked, since none can be picked out by URL; only the removed site withdraws.
+    expect(rechecks().map((m) => m.tabId).sort()).toEqual([1, 2, 3]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(revokedTabs()).toEqual([2]);
+  });
+
+  it("a removed site's tab is revoked whether or not its permission is gone yet", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+    live = new Set([1, 2]);
     seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
     fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
     await vi.waitFor(() => expect(revokedTabs()).toEqual([2]));
+    // Options' remove lands afterwards, and Chrome reports it: nothing more to withdraw.
+    await revokePermission("app.example.com");
+    fake.permissions.onRemoved.fire({ origins: ["https://app.example.com/*"] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(revokedTabs()).toEqual([2]);
   });
 
   // A stopped worker woken by Options' own config/changed has already read the new list in
@@ -419,6 +472,8 @@ describe("revoking open tabs", () => {
 
   it("a cold worker revokes a removed site's open tabs from the sites named in the message", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    live = new Set([1, 2]);
+    await revokePermission("crm.example.com");
     await boot({ account: ACCOUNT, allowSites: ["app.example.com"] });
     changed({ added: [], removed: ["crm.example.com"] });
     await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
@@ -435,6 +490,7 @@ describe("revoking open tabs", () => {
   it("ignores named sites that the current list contradicts", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    live = new Set([1]);
     fake.executedScripts.length = 0;
     // Removed crm but it is listed again; added app but it is no longer listed.
     changed({ added: ["app.example.com"], removed: ["crm.example.com"] });
@@ -464,6 +520,8 @@ describe("revoking open tabs", () => {
   it("a cold wake racing doInit's own sync still revokes the removed site's open tabs", async () => {
     fake.registeredScripts.push(scriptFor("crm.example.com"));
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    live = new Set([1]);
+    await revokePermission("crm.example.com");
     await coldWake({ account: ACCOUNT, allowSites: [] }, { added: [], removed: ["crm.example.com"] });
     await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
     expect(fake.registeredScripts).toEqual([]);
@@ -479,10 +537,12 @@ describe("revoking open tabs", () => {
   it("revokes open tabs even when an earlier step of the handler throws", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    live = new Set([1]);
     fake.scripting.registerContentScripts = async () => {
       throw new Error("simulated register failure");
     };
     seedConfig({ account: ACCOUNT, allowSites: ["app.example.com"] });
+    await revokePermission("crm.example.com");
     changed({ added: [], removed: ["crm.example.com"] });
     await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
   });
@@ -490,6 +550,7 @@ describe("revoking open tabs", () => {
   it("tolerates a malformed sites field", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    live = new Set([1]);
     fake.runtime.onMessage.fire(
       { target: "background", type: "config/changed", sites: { added: "x", removed: null } },
       {},
@@ -502,9 +563,79 @@ describe("revoking open tabs", () => {
   it("a host permission revoked outside Options revokes the tabs whose origin is no longer granted", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+    live = new Set([1, 2]);
+    // Chrome now hides tab 2's URL from the worker; only its check-in's sender still shows it.
     fake._grantedOrigins = ["https://crm.example.com/*"];
+    expect((await fake.tabs.query()).find((t) => t.id === 2)).toEqual({ id: 2 });
     fake.permissions.onRemoved.fire({ origins: ["https://app.example.com/*"] });
     await vi.waitFor(() => expect(revokedTabs()).toEqual([2]));
+  });
+
+  it("a cold worker woken by the revoke still finds the tab, and the tab stops counting", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    live = new Set([1]);
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    const mod = await import("../../src/background/service-worker.js");
+    await mod.initServiceWorker();
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(true));
+    await revokePermission("crm.example.com");
+    fake.permissions.onRemoved.fire({ origins: ["https://crm.example.com/*"] });
+    await vi.waitFor(() => expect(revokedTabs()).toEqual([1]));
+    // No Allow Site tab the extension may still run on: the runtime goes with it.
+    await vi.waitFor(() => expect(fake._offscreenOpen).toBe(false));
+  });
+
+  describe("judging a check-in", () => {
+    const checkIn = async (sender: unknown) => {
+      const replies: unknown[] = [];
+      fake.runtime.onMessage.fire({ target: "background", type: "site/checkIn" }, sender, (r) => replies.push(r));
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      return replies[0];
+    };
+    const REVOKED = { target: "content", type: "site/revoked" };
+
+    beforeEach(() => {
+      fake._tabs.push({ id: 1, url: "https://crm.example.com/app" });
+    });
+
+    it("a still-allowed, still-granted page is left alone", async () => {
+      await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+      expect(await checkIn(fake._senderFor(1))).toBeUndefined();
+    });
+
+    it("an unlisted page is told to withdraw", async () => {
+      await boot({ account: ACCOUNT, allowSites: ["app.example.com"] });
+      expect(await checkIn(fake._senderFor(1))).toEqual(REVOKED);
+    });
+
+    it("a listed page whose host permission is gone is told to withdraw", async () => {
+      fake._grantedOrigins = [];
+      await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+      expect(await checkIn(fake._senderFor(1))).toEqual(REVOKED);
+    });
+
+    it("a prerendered page is judged on its site alone, never for being prerendered", async () => {
+      await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+      expect(await checkIn(fake._senderFor(1, { documentLifecycle: "prerender" }))).toBeUndefined();
+      fake._grantedOrigins = [];
+      expect(await checkIn(fake._senderFor(1, { documentLifecycle: "prerender" }))).toEqual(REVOKED);
+    });
+
+    it("a sub-frame is judged on its own document's URL", async () => {
+      await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+      const frame = { tab: { id: 1, url: "https://crm.example.com/app" }, frameId: 4 };
+      expect(await checkIn({ ...frame, url: "https://crm.example.com/embed" })).toBeUndefined();
+      expect(await checkIn({ ...frame, url: "https://ads.example.net/" })).toEqual(REVOKED);
+    });
+
+    it("no URL, or a grant Chrome cannot answer, is no verdict", async () => {
+      await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+      expect(await checkIn({ frameId: 0 })).toBeUndefined();
+      fake.permissions.contains = async () => {
+        throw new Error("simulated contains failure");
+      };
+      expect(await checkIn(fake._senderFor(1))).toBeUndefined();
+    });
   });
 
   it("repeated hellos from an allowed page open one grace window and never push its deadline back", async () => {
@@ -894,18 +1025,21 @@ describe("host-page provisioning", () => {
     expect(fake.runtime.onMessage.listeners).toHaveLength(1);
     expect(fake.tabs.onRemoved.listeners).toHaveLength(1);
 
-    const replies: unknown[] = [];
-    fire({ type: "page/hello" }, SITE_SENDER, (r) => replies.push(r));
-    fire({ type: "page/hello" }, { tab: { id: 2, url: "https://evil.example/" } }, (r) => replies.push(r));
+    // Kept apart: the allowed hello also waits on the grant check, so the two may finish in
+    // either order.
+    const siteReplies: unknown[] = [];
+    const evilReplies: unknown[] = [];
+    fire({ type: "page/hello" }, SITE_SENDER, (r) => siteReplies.push(r));
+    fire({ type: "page/hello" }, { tab: { id: 2, url: "https://evil.example/" } }, (r) => evilReplies.push(r));
     await settle();
-    expect(replies).toEqual([]); // held, not declined
+    expect([...siteReplies, ...evilReplies]).toEqual([]); // held, not declined
 
     fake._storageGate = null;
     release();
     await init;
-    await vi.waitFor(() => expect(replies).toHaveLength(2));
-    expect((replies[0] as { state: DisplayState }).state).toBeDefined();
-    expect(replies[1]).toEqual({ declined: true });
+    await vi.waitFor(() => expect([...siteReplies, ...evilReplies]).toHaveLength(2));
+    expect((siteReplies[0] as { state: DisplayState }).state).toBeDefined();
+    expect(evilReplies[0]).toEqual({ declined: true });
   });
 
   it("9c. a site not in Allow Sites and a sub-frame are declined", async () => {
@@ -1038,6 +1172,34 @@ describe("host-page provisioning", () => {
     provision(PROV, { frameId: 0, tab: { id: 1 }, url: "https://crm.example.com/other" });
     await vi.waitFor(() => expect(starts().length).toBe(1));
     expect(fake._sessionData["websipphone.provisioned"]).toMatchObject({ origin: "https://crm.example.com" });
+  });
+
+  it("14b. a listed site whose host permission was revoked can neither read state nor provision", async () => {
+    await bootWithTab();
+    provision();
+    await vi.waitFor(() => expect(starts().length).toBe(1));
+    fake.sentRuntimeMessages.length = 0;
+
+    // Revoked in chrome://extensions: the site is still in Allow Sites, its content script still
+    // running until the re-check reaches it.
+    fake._grantedOrigins = [];
+    const replies: unknown[] = [];
+    fire({ type: "page/hello" }, SITE_SENDER, (r) => replies.push(r));
+    await vi.waitFor(() => expect(replies).toEqual([{ declined: true }]));
+    provision({ ...PROV, account: "2002" });
+    deprovision();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtimeTypes()).toEqual([]);
+    expect(fake._sessionData["websipphone.provisioned"]).toMatchObject({ account: "2001" });
+
+    // A grant Chrome cannot answer counts as not granted.
+    fake._grantedOrigins = null;
+    fake.permissions.contains = async () => {
+      throw new Error("simulated contains failure");
+    };
+    replies.length = 0;
+    fire({ type: "page/hello" }, SITE_SENDER, (r) => replies.push(r));
+    await vi.waitFor(() => expect(replies).toEqual([{ declined: true }]));
   });
 
   it("15. a provision and a deprovision fired back-to-back settle consistently", async () => {

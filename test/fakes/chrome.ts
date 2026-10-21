@@ -15,6 +15,7 @@ class FakeEvent<T extends unknown[]> {
 
 export interface FakeTab {
   id: number;
+  /** The real URL. What the extension is shown of it depends on its host permissions (see `scrub`). */
   url: string;
   /** Set only on a tab a page opened; the options page uses it to decide whether to close itself. */
   openerTabId?: number;
@@ -27,8 +28,8 @@ export function installFakeChrome() {
 
   const tabs: FakeTab[] = [];
   const tabsOnRemoved = new FakeEvent<[number]>();
-  const tabsOnUpdated = new FakeEvent<[number, { url?: string; status?: string }, FakeTab]>();
-  const sentTabMessages: Array<{ tabId: number; message: unknown }> = [];
+  const tabsOnUpdated = new FakeEvent<[number, { url?: string; status?: string }, { id: number; url?: string }]>();
+  const sentTabMessages: Array<{ tabId: number; message: unknown; options?: unknown }> = [];
 
   const runtimeOnMessage = new FakeEvent<[unknown, unknown, (response?: unknown) => void]>();
   const runtimeOnInstalled = new FakeEvent<[{ reason: string }]>();
@@ -42,13 +43,37 @@ export function installFakeChrome() {
   const permissionRemovals: unknown[] = [];
   const removedTabs: number[] = [];
 
+  /**
+   * Like Chrome for an extension without the `tabs` permission: a URL is shown only for an origin
+   * the extension has host permission for, and for its own pages. Everything else comes back
+   * with no `url` (and, in Chrome, no `title` or `favIconUrl`, which this fake never models).
+   */
+  const urlVisible = (url: string): boolean => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+    return parsed.protocol === "chrome-extension:" || originGranted(`${parsed.origin}/*`);
+  };
+  const originGranted = (pattern: string): boolean =>
+    !fake._revokedOrigins.has(pattern) && (fake._grantedOrigins === null || fake._grantedOrigins.includes(pattern));
+  const scrub = (tab: FakeTab): { id: number; url?: string } =>
+    urlVisible(tab.url) ? { id: tab.id, url: tab.url } : { id: tab.id };
+  /** onUpdated as Chrome fires it on a commit: `changeInfo.url` only when the new URL is visible. */
+  const fireLoading = (tab: FakeTab): void => {
+    tabsOnUpdated.fire(tab.id, urlVisible(tab.url) ? { url: tab.url, status: "loading" } : { status: "loading" }, scrub(tab));
+  };
+
   const fake = {
     _localData: localData,
     _sessionData: sessionData,
     _tabs: tabs,
     _openTab(id: number, url: string) {
-      tabs.push({ id, url });
-      tabsOnUpdated.fire(id, { url, status: "loading" }, { id, url });
+      const tab = { id, url };
+      tabs.push(tab);
+      fireLoading(tab);
     },
     _closeTab(id: number) {
       const i = tabs.findIndex((t) => t.id === id);
@@ -56,10 +81,23 @@ export function installFakeChrome() {
       tabsOnRemoved.fire(id);
     },
     _navigateTab(id: number, url: string) {
-      const tab = tabs.find((t) => t.id === id);
-      if (tab) tab.url = url;
-      tabsOnUpdated.fire(id, { url, status: "loading" }, { id, url });
+      const tab = tabs.find((t) => t.id === id) ?? { id, url };
+      tab.url = url;
+      fireLoading(tab);
     },
+    /**
+     * The `MessageSender` Chrome attaches to a message from the top frame of tab `id`. Never
+     * scrubbed, whatever the permissions: `tab` keeps its URL and `url` is always set.
+     */
+    _senderFor(id: number, extra: Record<string, unknown> = {}) {
+      const url = tabs.find((t) => t.id === id)?.url;
+      return { tab: { id, url }, url, frameId: 0, ...extra };
+    },
+    /**
+     * Stands in for the content script(s) of a tab: what `tabs.sendMessage` resolves with. Unset,
+     * every message is delivered and answered with nothing.
+     */
+    _tabMessageHandler: null as ((tabId: number, message: unknown) => unknown) | null,
     _grantPermissions: true,
     _offscreenOpen: false,
     optionsOpened: 0,
@@ -69,6 +107,8 @@ export function installFakeChrome() {
     executedScripts,
     /** Origins (`https://host/*`) the user has granted; null grants everything. */
     _grantedOrigins: null as string[] | null,
+    /** Origins taken away since, by `permissions.remove`: they stay revoked whatever the above says. */
+    _revokedOrigins: new Set<string>(),
     /** Tab ids whose injection fails, as a closed or error-page tab would. */
     _failInjectTabs: new Set<number>(),
     permissionRequests,
@@ -123,9 +163,10 @@ export function installFakeChrome() {
     },
 
     tabs: {
-      query: async () => tabs.map((t) => ({ id: t.id, url: t.url })),
-      sendMessage: async (tabId: number, message: unknown) => {
-        sentTabMessages.push({ tabId, message });
+      query: async () => tabs.map(scrub),
+      sendMessage: async (tabId: number, message: unknown, options?: unknown) => {
+        sentTabMessages.push({ tabId, message, ...(options === undefined ? {} : { options }) });
+        return fake._tabMessageHandler?.(tabId, message);
       },
       getCurrent: async () => fake._currentTab,
       remove: async (id: number) => {
@@ -183,17 +224,32 @@ export function installFakeChrome() {
     },
 
     permissions: {
-      request: async (perms: unknown) => {
+      request: async (perms: { origins?: string[] }) => {
         permissionRequests.push(perms);
+        if (fake._grantPermissions) {
+          for (const o of perms.origins ?? []) {
+            fake._revokedOrigins.delete(o);
+            if (fake._grantedOrigins !== null && !fake._grantedOrigins.includes(o)) {
+              fake._grantedOrigins.push(o);
+            }
+          }
+        }
         return fake._grantPermissions;
       },
-      remove: async (perms: unknown) => {
+      // Takes effect at once, like Chrome's: the next tabs.query no longer shows those tabs' URLs.
+      // Chrome also fires onRemoved; a test fires it itself, when it wants the worker to hear.
+      remove: async (perms: { origins?: string[] }) => {
         permissionRemovals.push(perms);
+        for (const o of perms.origins ?? []) {
+          fake._revokedOrigins.add(o);
+          if (fake._grantedOrigins !== null) {
+            fake._grantedOrigins = fake._grantedOrigins.filter((g) => g !== o);
+          }
+        }
         return true;
       },
       onRemoved: permissionsOnRemoved,
-      contains: async (perms: { origins?: string[] }) =>
-        fake._grantedOrigins === null || (perms.origins ?? []).every((o) => fake._grantedOrigins!.includes(o))
+      contains: async (perms: { origins?: string[] }) => (perms.origins ?? []).every(originGranted)
     },
 
     offscreen: {

@@ -326,6 +326,51 @@ describe("site removal", () => {
     expect(document.documentElement.dataset.webSipPhone).toBe("9.9.9");
   });
 
+  describe("re-check", () => {
+    const checkIns = () => fake.sentRuntimeMessages.filter((m) => (m as Msg).type === "site/checkIn");
+    const recheck = () => fake.runtime.onMessage.fire({ target: "content", type: "site/recheck" }, {}, () => {});
+    /** Have the worker answer a check-in with `verdict`; `null` rejects as a sleeping worker would. */
+    function answerCheckIn(verdict: unknown): void {
+      const inner = fake.runtime.sendMessage;
+      fake.runtime.sendMessage = async (message: unknown) => {
+        if ((message as Msg).type !== "site/checkIn") {
+          return inner(message);
+        }
+        fake.sentRuntimeMessages.push(message);
+        if (verdict === null) {
+          throw new Error("Could not establish connection. Receiving end does not exist.");
+        }
+        return verdict;
+      };
+    }
+
+    it("answers a site/recheck by checking in, and withdraws on a site/revoked verdict", async () => {
+      const instance = mount();
+      await flush();
+      answerCheckIn({ target: "content", type: "site/revoked" });
+      recheck();
+      await flush();
+      expect(checkIns()).toEqual([{ target: "background", type: "site/checkIn" }]);
+      expectGone(instance);
+    });
+
+    it.each([
+      ["no verdict (still allowed)", undefined],
+      ["an unrecognised reply", { nope: 1 }],
+      ["a sleeping worker", null]
+    ])("%s leaves the instance in place", async (_name, verdict) => {
+      const instance = mount();
+      await flush();
+      answerCheckIn(verdict);
+      recheck();
+      await flush();
+      expect(checkIns()).toHaveLength(1);
+      expect(instance.disposed).toBe(false);
+      expect(hosts()).toHaveLength(1);
+      expect(document.documentElement.dataset.webSipPhone).toBe("9.9.9");
+    });
+  });
+
   it("a site/revoked message from the worker tears the instance down without any hello", async () => {
     const instance = mount();
     await flush();
@@ -661,6 +706,19 @@ describe("activation of a prerendered page", () => {
     mount();
     await flush();
     expect(retries()).toHaveLength(1);
+  });
+
+  it("checks in on activation, and withdraws if its site went away while it was prerendering", async () => {
+    // A re-check sent during prerender never reached this document: activation is its turn.
+    const inner = fake.runtime.sendMessage;
+    fake.runtime.sendMessage = async (message: unknown) =>
+      (message as Msg).type === "site/checkIn"
+        ? (fake.sentRuntimeMessages.push(message), { target: "content", type: "site/revoked" })
+        : inner(message);
+    await activate({ state: displayState(), pos: null });
+    expect(fake.sentRuntimeMessages.filter((m) => (m as Msg).type === "site/checkIn")).toHaveLength(1);
+    expect(mounted[0].disposed).toBe(true);
+    expect(hosts()).toHaveLength(0);
   });
 
   it("removes the activation listener on teardown", async () => {

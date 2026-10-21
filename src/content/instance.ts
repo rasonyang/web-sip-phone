@@ -250,10 +250,32 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   document.addEventListener("visibilitychange", maybeNudgeRecovery);
   window.addEventListener("focus", maybeNudgeRecovery);
 
+  /**
+   * Tell the worker this document is live, so it can judge whether the site still is. The worker
+   * cannot find us itself: without the `tabs` permission a tab's URL is hidden from it once the
+   * host permission is gone — exactly when it needs it. The message's `sender` is not hidden, so
+   * the worker judges that and answers `site/revoked` if the site is gone. The answer goes through
+   * the same handler as a pushed message, so there is one way out. Anything else (a still-allowed
+   * site, a sleeping worker) is no verdict and changes nothing.
+   */
+  function checkIn(): void {
+    void guard.request({ target: "background", type: "site/checkIn" } satisfies Msg).then((answer) => {
+      if (!disposed && isMsg(answer?.reply)) {
+        onRuntimeMessage?.(answer.reply);
+      }
+    });
+  }
+
   // On activation the cached state is replaced by a fresh one before any nudge is judged. No
   // answer (worker asleep) leaves the stale flag set: the next real state update, or the next
   // visibility change after one, takes over rather than acting on a state known to be old.
+  //
+  // It is also a check-in. A re-check sent while this document was still prerendering appears not
+  // to reach it (tab messages, like broadcasts, target the tab's visible document), so a site
+  // removed in the meantime would otherwise keep its widget here until the page happened to say
+  // hello and be declined.
   function onActivated(): void {
+    checkIn();
     void guard.request({ target: "background", type: "ui/getState" } satisfies Msg).then((answer) => {
       if (disposed || !isTabState(answer?.reply)) {
         return;
@@ -271,6 +293,10 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
       } else if (raw.type === "mic/level") {
         // Arrives at 10 Hz while the panel is open; updates the meter bar only.
         viewRef.setMicLevel(raw.level);
+      } else if (raw.type === "site/recheck") {
+        // An Allow Site or a host permission just went away somewhere; the worker asks every
+        // open tab, since it cannot tell which ones are on that site.
+        checkIn();
       } else if (raw.type === "site/revoked") {
         // The site was removed from Allow Sites (or its host permission revoked) while this tab
         // was open. Withdraw at once rather than wait for the page's next hello to be declined.
