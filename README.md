@@ -111,16 +111,18 @@ Treat the marker as the signal to say `hello`, and the `hello` reply — followe
 message — as the confirmation.
 
 **Already-open tabs.** The page never needs to be refreshed for the extension to reach it. When the
-extension is installed or updated, and when a site is added to Allow Sites, the content script is
-injected straight into every open tab on an Allow Site whose host permission is granted. The new
-instance sets the marker and posts a `state` message unsolicited as soon as it has state, so a page
-already listening for `state` sees it without sending `hello` again (a fresh `hello` is answered as
-usual). An update or reload leaves the previous content script orphaned: it tears itself down —
-removing its widget and the marker, and no longer answering `hello` — when the new instance
-replaces it, or as soon as it notices its extension context is gone. If the extension is disabled or
-removed with no replacement, the marker goes the next time the orphan is asked anything (a `hello`,
-the tab regaining focus), so a page that sees the marker but gets no `hello` reply should treat the
-extension as absent. One exception on the first update to 1.0.6 only: a 1.0.5 content script predates
+extension is installed, updated or re-enabled (any start of its background worker), and when a site
+is added to Allow Sites, the content script is injected straight into every open tab on an Allow
+Site whose host permission is granted and that has no live content script yet (each tab is pinged
+first, so a tab that already has one is left alone). The new instance sets the marker and posts a
+`state` message unsolicited as soon as it has state, so a page already listening for `state` sees it
+without sending `hello` again (a fresh `hello` is answered as usual). An update or reload leaves the
+previous content script orphaned: it tears itself down — removing its widget and the marker, and no
+longer answering `hello` — when the new instance replaces it, or as soon as it notices its extension
+context is gone. If the extension is disabled or removed with no replacement, the marker goes the
+next time the orphan is asked anything (a `hello`, the tab regaining focus), so a page that sees the
+marker but gets no `hello` reply should treat the extension as absent; if it is enabled again, the
+marker comes back without a refresh. One exception on the first update to 1.0.6 only: a 1.0.5 content script predates
 this teardown, so its widget is removed but it can still answer a `hello` from an open tab with its
 old `extensionVersion`; ignore a `hello` reply whose `extensionVersion` is older than one already seen.
 

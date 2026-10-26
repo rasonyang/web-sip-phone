@@ -111,6 +111,8 @@ export function installFakeChrome() {
     _revokedOrigins: new Set<string>(),
     /** Tab ids whose injection fails, as a closed or error-page tab would. */
     _failInjectTabs: new Set<number>(),
+    /** Tabs `scripting.executeScript` has injected into: they answer a `script/ping` from then on. */
+    _scriptTabs: new Set<number>(),
     permissionRequests,
     permissionRemovals,
     removedTabs,
@@ -166,7 +168,15 @@ export function installFakeChrome() {
       query: async () => tabs.map(scrub),
       sendMessage: async (tabId: number, message: unknown, options?: unknown) => {
         sentTabMessages.push({ tabId, message, ...(options === undefined ? {} : { options }) });
-        return fake._tabMessageHandler?.(tabId, message);
+        const reply = fake._tabMessageHandler?.(tabId, message);
+        if (reply === undefined && (message as { type?: string }).type === "script/ping") {
+          // What Chrome does for a tab nobody listens in; a tab the fake injected into answers.
+          if (!fake._scriptTabs.has(tabId)) {
+            throw new Error("Could not establish connection. Receiving end does not exist.");
+          }
+          return true;
+        }
+        return reply;
       },
       getCurrent: async () => fake._currentTab,
       remove: async (id: number) => {
@@ -219,6 +229,7 @@ export function installFakeChrome() {
           throw new Error(`Cannot access contents of tab ${injection.target.tabId}`);
         }
         executedScripts.push(injection);
+        fake._scriptTabs.add(injection.target.tabId);
         return [];
       }
     },

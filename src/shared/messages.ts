@@ -99,6 +99,10 @@ export type Msg =
   // script removes its widget, the presence marker and the page bridge. The worker sends it as
   // its answer to a `site/checkIn`; one arriving as a pushed message is honoured the same way.
   | { target: "content"; type: "site/revoked" }
+  // "Is a content script live here?": sent to a tab's top frame before the worker injects into it.
+  // The live instance answers `true` at once; a tab with no script, or only one orphaned by an
+  // update or a disable, has no receiver and rejects. That is what keeps injection idempotent.
+  | { target: "content"; type: "script/ping" }
   | { target: "content"; type: "state/update"; state: DisplayState; pos: StoredDotPosition | null }
   | { target: "options"; type: "state/update"; state: DisplayState };
 

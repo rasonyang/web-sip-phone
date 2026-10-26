@@ -67,7 +67,7 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   let host: HTMLElement | null = null;
   let view: WebSipPhoneView | null = null;
   let bridge: PageBridge | null = null;
-  let onRuntimeMessage: ((raw: unknown) => boolean) | null = null;
+  let onRuntimeMessage: ((raw: unknown, sender?: unknown, sendResponse?: (response: unknown) => void) => boolean) | null = null;
   let onResize: (() => void) | null = null;
   let onReplace: (() => void) | null = null;
 
@@ -286,7 +286,7 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
   }
   document.addEventListener("prerenderingchange", onActivated);
 
-  onRuntimeMessage = (raw: unknown): boolean => {
+  onRuntimeMessage = (raw: unknown, _sender?: unknown, sendResponse?: (response: unknown) => void): boolean => {
     if (isMsg(raw) && raw.target === "content") {
       if (raw.type === "state/update") {
         applyTabState({ state: raw.state, pos: raw.pos });
@@ -301,6 +301,11 @@ export function mountWebSipPhone(): WebSipPhoneInstance | null {
         // The site was removed from Allow Sites (or its host permission revoked) while this tab
         // was open. Withdraw at once rather than wait for the page's next hello to be declined.
         teardown();
+      } else if (raw.type === "script/ping") {
+        // The worker asks before injecting, so a tab that already has a live instance is left
+        // alone. Answered synchronously; a torn-down instance has removed this listener and, like
+        // an orphaned one, stays silent — which is how the worker knows to inject again.
+        sendResponse?.(true);
       }
     }
     return false;

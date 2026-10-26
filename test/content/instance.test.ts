@@ -371,6 +371,20 @@ describe("site removal", () => {
     });
   });
 
+  it("a live instance answers script/ping with true; after teardown it no longer answers", async () => {
+    const instance = mount();
+    await flush();
+    const ping = () => {
+      const answers: unknown[] = [];
+      fake.runtime.onMessage.fire({ target: "content", type: "script/ping" }, {}, (r) => answers.push(r));
+      return answers;
+    };
+    expect(ping()).toEqual([true]);
+    fake.runtime.onMessage.fire({ target: "content", type: "site/revoked" }, {}, () => {});
+    expectGone(instance);
+    expect(ping()).toEqual([]);
+  });
+
   it("a site/revoked message from the worker tears the instance down without any hello", async () => {
     const instance = mount();
     await flush();

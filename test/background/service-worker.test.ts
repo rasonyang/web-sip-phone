@@ -410,6 +410,9 @@ describe("revoking open tabs", () => {
       if (!live.has(tabId)) {
         return undefined;
       }
+      if (type === "script/ping") {
+        return true;
+      }
       if (type === "site/revoked") {
         withdraw(tabId);
       } else if (type === "site/recheck") {
@@ -482,6 +485,8 @@ describe("revoking open tabs", () => {
   it("a cold worker injects into open tabs of an added site named in the message", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    // The start-up pass injected already; model the tab as script-less again for the message.
+    fake._scriptTabs.clear();
     fake.executedScripts.length = 0;
     changed({ added: ["crm.example.com"], removed: [] });
     await vi.waitFor(() => expect(fake.executedScripts.map((i) => i.target.tabId)).toEqual([1]));
@@ -669,33 +674,60 @@ describe("revoking open tabs", () => {
 });
 
 describe("injection into already-open tabs", () => {
-  const injectedTabs = () => fake.executedScripts.map((s) => s.target.tabId).sort();
+  const injectedTabs = () => fake.executedScripts.map((s) => s.target.tabId).sort((a, b) => a - b);
+  const pings = () => fake.sentTabMessages.filter((m) => (m.message as { type?: string }).type === "script/ping");
+  /** Tabs whose content script is alive: they answer the ping, as the real instance does. */
+  function liveScripts(ids: number[]) {
+    const live = new Set(ids);
+    fake._tabMessageHandler = (tabId, message) =>
+      (message as { type?: string }).type === "script/ping" && live.has(tabId) ? true : undefined;
+    return live;
+  }
+  const changed = (sites: { added: string[]; removed: string[] }) =>
+    fake.runtime.onMessage.fire({ target: "background", type: "config/changed", sites }, {}, () => {});
 
-  it("an update injects into every open Allow Site tab, and nowhere else, without opening options", async () => {
+  it("a worker start injects into the open Allow Site tabs that have no script, and nowhere else", async () => {
     fake._tabs.push(
       { id: 1, url: "https://crm.example.com/queue" },
       { id: 2, url: "https://other.example.com/" },
       { id: 3, url: "http://crm.example.com/" }, // public host over plain http: not an Allow Site match
       { id: 4, url: "http://192.168.31.55:8080/agent" },
-      { id: 5, url: "chrome://extensions/" }
+      { id: 5, url: "chrome://extensions/" },
+      { id: 6, url: "https://crm.example.com/live" }
     );
+    liveScripts([6]);
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com", "192.168.31.55"] });
-    fake.runtime.onInstalled.fire({ reason: "update" });
-    await vi.waitFor(() => expect(injectedTabs()).toEqual([1, 4]));
+    expect(injectedTabs()).toEqual([1, 4]);
     for (const s of fake.executedScripts) {
       expect(s).toEqual({ target: { tabId: s.target.tabId, allFrames: false }, files: ["content.js"] });
     }
     expect(fake.optionsOpened).toBe(0);
   });
 
-  it("install injects too, and a browser update of Chrome itself does not", async () => {
-    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+  it("pings the top frame only, and only tabs that pass the URL and grant filters", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://other.example.com/" });
     await boot({ allowSites: ["crm.example.com"] });
-    fake.runtime.onInstalled.fire({ reason: "chrome_update" });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(fake.executedScripts).toEqual([]);
-    fake.runtime.onInstalled.fire({ reason: "install" });
-    await vi.waitFor(() => expect(injectedTabs()).toEqual([1]));
+    expect(pings().map((m) => m.tabId)).toEqual([1]);
+    expect(pings()[0].options).toEqual({ frameId: 0 });
+  });
+
+  it("scale: 20 Allow Site tabs over 3 sites plus 10 others inject exactly the dead ones, once each", async () => {
+    const hosts = ["a.example.com", "b.example.com", "c.example.com"];
+    const dead: number[] = [];
+    const alive: number[] = [];
+    for (let id = 1; id <= 20; id++) {
+      fake._tabs.push({ id, url: `https://${hosts[id % 3]}/page${id}` });
+      (id % 4 === 0 ? alive : dead).push(id);
+    }
+    for (let id = 21; id <= 30; id++) {
+      fake._tabs.push({ id, url: `https://elsewhere${id}.example.org/` });
+    }
+    liveScripts(alive);
+    await boot({ allowSites: hosts });
+    expect(injectedTabs()).toEqual(dead);
+    for (const s of fake.executedScripts) {
+      expect(s).toEqual({ target: { tabId: s.target.tabId, allFrames: false }, files: ["content.js"] });
+    }
   });
 
   it("skips tabs whose host permission is not granted, and one failing tab does not stop the rest", async () => {
@@ -707,13 +739,42 @@ describe("injection into already-open tabs", () => {
     fake._grantedOrigins = ["https://app.example.com/*"];
     fake._failInjectTabs.add(2);
     await boot({ allowSites: ["crm.example.com", "app.example.com"] });
+    expect(injectedTabs()).toEqual([3]);
+  });
+
+  it("a worker woken cold by a page's hello injects nothing when every script is alive", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/a" }, { id: 2, url: "https://app.example.com/b" });
+    liveScripts([1, 2]);
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
+    const mod = await import("../../src/background/service-worker.js");
+    fake.runtime.onMessage.fire({ target: "background", type: "page/hello" }, fake._senderFor(1), () => {});
+    await mod.initServiceWorker();
+    expect(pings().map((m) => m.tabId).sort()).toEqual([1, 2]);
+    expect(fake.executedScripts).toEqual([]);
+  });
+
+  it("install and update inject at boot, not again from onInstalled; install still opens Options", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    await boot({ allowSites: ["crm.example.com"] });
+    expect(injectedTabs()).toEqual([1]);
+
+    // The injected tab now has a script; had the injection run again it would be a duplicate.
+    fake._scriptTabs.clear();
+    fake.executedScripts.length = 0;
     fake.runtime.onInstalled.fire({ reason: "update" });
-    await vi.waitFor(() => expect(injectedTabs()).toEqual([3]));
+    fake.runtime.onInstalled.fire({ reason: "chrome_update" });
+    fake.runtime.onInstalled.fire({ reason: "install" });
+    await vi.waitFor(() => expect(fake.optionsOpened).toBe(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fake.executedScripts).toEqual([]);
+    expect(fake._sessionData["websipphone.openSection"]).toBe("sites");
   });
 
   it("adding a site injects into its open tabs only; sites already allowed are left alone", async () => {
     fake._tabs.push({ id: 1, url: "https://crm.example.com/" }, { id: 2, url: "https://app.example.com/" });
+    liveScripts([1]);
     await boot({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    fake.executedScripts.length = 0;
     seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com", "app.example.com"] });
     fake.runtime.onMessage.fire({ target: "background", type: "config/changed" }, {}, () => {});
     await vi.waitFor(() => expect(injectedTabs()).toEqual([2]));
@@ -728,6 +789,36 @@ describe("injection into already-open tabs", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(fake.executedScripts).toEqual([]);
   });
+
+  it("a cold wake by a config/changed that added a site injects into its script-less tab exactly once", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/" });
+    // A slow injection keeps doInit's start-up pass in flight while the handler's pass starts;
+    // unserialized, the handler's ping would land before the first script is up.
+    const executeScript = fake.scripting.executeScript;
+    fake.scripting.executeScript = async (...args: Parameters<typeof executeScript>) => {
+      await new Promise((res) => setTimeout(res, 30));
+      return executeScript(...args);
+    };
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    const mod = await import("../../src/background/service-worker.js");
+    changed({ added: ["crm.example.com"], removed: [] });
+    await mod.initServiceWorker();
+    await vi.waitFor(() => expect(pings().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(injectedTabs()).toEqual([1]);
+  });
+
+  it("a tab that never answers the ping does not hold up the others, and is injected after the timeout", async () => {
+    fake._tabs.push({ id: 1, url: "https://crm.example.com/hung" }, { id: 2, url: "https://crm.example.com/dead" });
+    fake._tabMessageHandler = (tabId, message) =>
+      (message as { type?: string }).type === "script/ping" && tabId === 1 ? new Promise(() => {}) : undefined;
+    seedConfig({ account: ACCOUNT, allowSites: ["crm.example.com"] });
+    const mod = await import("../../src/background/service-worker.js");
+    const init = mod.initServiceWorker();
+    await vi.waitFor(() => expect(injectedTabs()).toEqual([2]));
+    await init; // settles once the timeout has passed
+    expect(injectedTabs()).toEqual([1, 2]);
+  }, 5000);
 });
 
 describe("host-page provisioning", () => {
