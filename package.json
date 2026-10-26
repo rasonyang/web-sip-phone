@@ -13,7 +13,7 @@
     "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {
-    "sip.js": "github:rasonyang/SIP.js#82b209d1a4dc7eb175a0c59b70d4a6faea13cef0"
+    "sip.js": "github:rasonyang/SIP.js#e1d4baee6c57f50f1f0d3d88da9d0c94d2abb7bd"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

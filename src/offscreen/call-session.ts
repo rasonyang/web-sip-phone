@@ -192,17 +192,19 @@ export class CallSessionManager {
     }
     try {
       await s.accept({ sessionDescriptionHandlerOptions: { constraints: MIC_CONSTRAINTS } });
-      // SIP.js resolves accept() when a CANCEL wins the race (it squelches the error), so
-      // ownership must be rechecked after the await.
+      // Since rasonyang/SIP.js#1 accept() rejects when a CANCEL wins the race (earlier versions
+      // resolved it); either way ownership must be rechecked after the await.
       if (this.session === s) {
         this.wireMedia();
       }
     } catch (e) {
       // Never fake a successful answer: accept() failing (e.g. mic denied) fails the call.
-      diag("call", "accept failed", { error: String(e) });
-      if (this.session === s) {
-        this.apply("FAIL");
+      if (this.session !== s) {
+        diag("call", "call ended while the answer was in flight", { error: String(e) });
+        return;
       }
+      diag("call", "accept failed", { error: String(e) });
+      this.apply("FAIL");
     }
   }
 
@@ -244,9 +246,9 @@ export class CallSessionManager {
         // state to leave RINGING, or it would still be ringing over the caller's audio.
         this.deps.ringtone.stop();
         await s.accept({ sessionDescriptionHandlerOptions: { constraints: MIC_CONSTRAINTS } });
-        // SIP.js resolves (not rejects) accept() when a CANCEL wins the race — it squelches the
-        // error once the invitation is canceled — so a resolved accept() does not mean the call
-        // is ours. Marking it ACTIVE with an empty slot (or over a newer call) wedges the phone.
+        // Since rasonyang/SIP.js#1 accept() rejects when a CANCEL wins the race; earlier versions
+        // resolved it. Either way a settled accept() does not mean the call is still ours, and
+        // marking it ACTIVE with an empty slot (or over a newer call) wedges the phone.
         if (this.session !== s) {
           diag("broadsoft", "call ended while the answer was in flight; not marking ACTIVE");
           return;
@@ -258,8 +260,15 @@ export class CallSessionManager {
         await applyTalkAction(s as never, TalkAction.Talk);
       }
     } catch (e) {
+      if (answerBeforeActive && this.session !== s) {
+        // The CANCEL won the race and accept() rejected: expected, not a fault.
+        diag("broadsoft", "call ended while the answer was in flight; not marking ACTIVE", {
+          error: String(e)
+        });
+        return;
+      }
       diag("broadsoft", "apply action failed", { event: ev, error: String(e) });
-      if (answerBeforeActive && this.session === s) {
+      if (answerBeforeActive) {
         this.apply("FAIL");
       }
     }
