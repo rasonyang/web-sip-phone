@@ -446,21 +446,68 @@ async function originGranted(url: string): Promise<boolean | null> {
   }
 }
 
+/** How long a tab may take to answer the liveness ping before it is treated as having no script. */
+const PING_TIMEOUT_MS = 1000;
+
 /**
- * Inject the content script into every open tab already showing one of `sites`.
+ * True when the top frame of `tabId` answers the ping, i.e. holds a live content script. Anything
+ * else — "Receiving end does not exist" (no script, or one orphaned by an update or a disable),
+ * an answer that is not `true`, or no answer within PING_TIMEOUT_MS (a frozen or hung tab) —
+ * counts as not alive. Top frame only: the content script runs only there.
+ */
+async function contentScriptAlive(tabId: number): Promise<boolean> {
+  const ping: Msg = { target: "content", type: "script/ping" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const reply = await Promise.race([
+      chrome.tabs.sendMessage(tabId, ping, { frameId: 0 }),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), PING_TIMEOUT_MS);
+      })
+    ]);
+    return reply === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let injectionOps: Promise<void> = Promise.resolve();
+
+/**
+ * Serialized like syncContentScripts, each run with its own `sites`. A cold wake by a
+ * config/changed that added a site runs doInit's start-up pass and the handler's pass together;
+ * unserialized, both would ping before either injected and the tab would get the script twice.
+ */
+function injectIntoOpenTabs(sites: string[]): Promise<void> {
+  const run = injectionOps.then(() => doInjectIntoOpenTabs(sites));
+  // Keep the chain alive after a failure; the caller still observes `run`.
+  injectionOps = run.catch((e) => console.warn("[WebSipPhone] content script injection failed", e));
+  return run;
+}
+
+/**
+ * Inject the content script into every open tab already showing one of `sites` that has none.
  *
  * A registered content script only runs on the next navigation, so without this a tab that was
- * open when the extension was installed or updated, or when its site was added to Allow Sites,
- * shows nothing until the user refreshes it — and after an update its old content script is
- * orphaned. The injected instance replaces any earlier one itself (content/instance.ts).
+ * open when the worker started — the extension installed, updated or re-enabled in
+ * chrome://extensions — or when its site was added to Allow Sites, shows nothing until the user
+ * refreshes it. Run at every worker start (doInit) rather than from runtime.onInstalled, which
+ * fires only on install and update, and rather than runtime.onStartup, which does not fire on
+ * enable either. Starting a worker is then not enough to know a tab needs the script: a worker
+ * restarting after an idle kill leaves live instances behind. So each tab is pinged first
+ * (contentScriptAlive) and only the silent ones are injected; after an update or a disable the
+ * old script is orphaned and does not answer. A duplicate injection would be harmless anyway —
+ * the injected instance replaces any earlier one itself (content/instance.ts).
  *
  * The extension holds no `tabs` permission, so `tab.url` is there only for origins it has host
  * permission for: a tab with no URL is one it could not inject into anyway. The explicit grant
  * check stays all the same — it is the actual precondition, and it does not lean on how Chrome
- * scrubs a tab. Every tab stands alone — a discarded tab, a navigation racing the injection or an
- * error page must not keep the others from getting the script.
+ * scrubs a tab. Every tab stands alone — a discarded tab, a hung one, a navigation racing the
+ * injection or an error page must not keep the others from getting the script.
  */
-async function injectIntoOpenTabs(sites: string[]): Promise<void> {
+async function doInjectIntoOpenTabs(sites: string[]): Promise<void> {
   if (sites.length === 0) {
     return;
   }
@@ -474,6 +521,9 @@ async function injectIntoOpenTabs(sites: string[]): Promise<void> {
         return;
       }
       try {
+        if (await contentScriptAlive(tab.id)) {
+          return;
+        }
         await chrome.scripting.executeScript({
           target: { tabId: tab.id, allFrames: CONTENT_SCRIPT.allFrames },
           files: [...CONTENT_SCRIPT.js]
@@ -863,12 +913,8 @@ async function doInit(): Promise<void> {
         .catch(() => {})
         .then(() => chrome.runtime.openOptionsPage());
     }
-    if (details.reason === "install" || details.reason === "update") {
-      // Open Allow Site tabs get the new content script now; after an update their old one is
-      // orphaned and would otherwise sit there frozen until the tab is refreshed. Config is
-      // only read once initialisation has finished.
-      void initServiceWorker().then(() => injectIntoOpenTabs(config.allowSites));
-    }
+    // No injection here: an install or update always starts a fresh worker, and doInit's
+    // start-up pass injects into the open Allow Site tabs whose old script is orphaned.
   });
   // Host permission revoked outside Options (chrome://extensions, the toolbar menu) while the
   // site stays in Allow Sites, or by Options' own Remove. The registered script can no longer
@@ -912,8 +958,20 @@ async function doInit(): Promise<void> {
 
   await tracker.init();
   markReady();
-  await syncContentScripts();
-  await evaluate();
+  try {
+    await syncContentScripts();
+    await evaluate();
+  } finally {
+    // Every worker start — install, update, re-enable (which fires neither onInstalled nor
+    // onStartup) or a wake — brings open Allow Site tabs without a live script up to date. After
+    // evaluate(), so an injected script's ui/getState is answered with the new state; a throw
+    // above must not skip it, and a failure here must not reject init.
+    try {
+      await injectIntoOpenTabs(config.allowSites);
+    } catch (e) {
+      console.warn("[WebSipPhone] start-up content script injection failed", e);
+    }
+  }
 }
 
 void initServiceWorker();
