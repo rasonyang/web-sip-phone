@@ -76,6 +76,19 @@ export class CallSessionManager {
   }
 
   handleInvite(invitation: InvitationLike): void {
+    // A call-in-progress state with an empty slot is impossible by construction — a terminated
+    // session clears the slot and applies the terminal event in one step — and there is nothing
+    // in it to protect. Answering 486 here would cost the caller a full busy_delay_time and the
+    // phone would keep doing so for every later INVITE (nothing else leaves such a state), so
+    // as with the other wedges below this side is the only backstop: reset and let it ring.
+    if (this.session === null && isCallInProgress(this.state)) {
+      diag("call", "call state in progress with no session; resetting instead of rejecting", {
+        state: this.state,
+        elapsedMs: Date.now() - this.stateSince
+      });
+      this.forceIdle();
+    }
+
     // A session slot still occupied while the manager is not on a call is waiting for a
     // `Terminated` that should have arrived in milliseconds. Two paths get here: an accept()
     // that failed and whose invitation never terminated, and the same one after its reset
@@ -148,7 +161,9 @@ export class CallSessionManager {
 
     if (auto) {
       diag("call", "controlled outbound INVITE; auto-answering", { delaySeconds: delay });
-      setTimeout(() => void this.answer(), (delay as number) * 1000);
+      // Bound to this invitation: the timer outlives a call cancelled during the delay and must
+      // not answer whatever call holds the slot by the time it fires.
+      setTimeout(() => void this.answer(invitation), (delay as number) * 1000);
     } else {
       diag("call", "normal inbound INVITE; awaiting remote answer");
     }
@@ -171,18 +186,23 @@ export class CallSessionManager {
     }
   }
 
-  private async answer(): Promise<void> {
-    const s = this.session;
-    if (!s || s.state !== "Initial") {
+  private async answer(s: InvitationLike): Promise<void> {
+    if (this.session !== s || s.state !== "Initial") {
       return;
     }
     try {
       await s.accept({ sessionDescriptionHandlerOptions: { constraints: MIC_CONSTRAINTS } });
-      this.wireMedia();
+      // SIP.js resolves accept() when a CANCEL wins the race (it squelches the error), so
+      // ownership must be rechecked after the await.
+      if (this.session === s) {
+        this.wireMedia();
+      }
     } catch (e) {
       // Never fake a successful answer: accept() failing (e.g. mic denied) fails the call.
       diag("call", "accept failed", { error: String(e) });
-      this.apply("FAIL");
+      if (this.session === s) {
+        this.apply("FAIL");
+      }
     }
   }
 
@@ -224,6 +244,13 @@ export class CallSessionManager {
         // state to leave RINGING, or it would still be ringing over the caller's audio.
         this.deps.ringtone.stop();
         await s.accept({ sessionDescriptionHandlerOptions: { constraints: MIC_CONSTRAINTS } });
+        // SIP.js resolves (not rejects) accept() when a CANCEL wins the race — it squelches the
+        // error once the invitation is canceled — so a resolved accept() does not mean the call
+        // is ours. Marking it ACTIVE with an empty slot (or over a newer call) wedges the phone.
+        if (this.session !== s) {
+          diag("broadsoft", "call ended while the answer was in flight; not marking ACTIVE");
+          return;
+        }
         this.setState(CallState.Active);
         this.wireMedia();
       } else {
@@ -232,7 +259,7 @@ export class CallSessionManager {
       }
     } catch (e) {
       diag("broadsoft", "apply action failed", { event: ev, error: String(e) });
-      if (answerBeforeActive) {
+      if (answerBeforeActive && this.session === s) {
         this.apply("FAIL");
       }
     }

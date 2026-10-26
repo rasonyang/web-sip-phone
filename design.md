@@ -922,6 +922,12 @@ ENDED
   held for longer than a short threshold while the Call State is not DIALING/RINGING/ACTIVE/HELD
   is a zombie and is discarded on the next INVITE. Listeners on a discarded session must check
   that the manager still owns it before acting, or a late `Terminated` tears down a later call.
+* An answer still in flight when its session terminates must not complete. SIP.js resolves
+  (rather than rejects) `accept()` when a CANCEL wins the race, so every continuation after an
+  `await` on an invitation — the RINGING+talk answer and the auto-answer timer alike — rechecks
+  that the manager still owns that invitation before changing state, and a timer is bound to the
+  invitation it was armed for. As a backstop, a DIALING/RINGING/ACTIVE/HELD state with an empty
+  session slot cannot be a live call; the next INVITE resets it instead of answering 486.
 * No transition that gates SIP behavior may depend on a background timer having fired. The
   offscreen document runs hidden, where Chrome throttles timers to the one-minute grid and can
   drop them across a freeze; a timer is allowed to drive when the UI *notices* a change, never

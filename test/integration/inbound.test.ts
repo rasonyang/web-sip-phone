@@ -12,6 +12,7 @@ vi.mock("../../src/offscreen/media.js", async (importOriginal) => ({
 beforeEach(() => {
   MockTransport.instances = [];
   FakeSDH.created = [];
+  FakeSDH.gate = null;
 });
 
 describe("normal inbound calls", () => {
@@ -72,6 +73,39 @@ describe("normal inbound calls", () => {
     await vi.waitFor(() => {
       expect(h.transport().sent.slice(before).some((m) => m.startsWith("SIP/2.0 486"))).toBe(true);
     });
+    expect(h.last().callInProgress).toBe(true);
+  });
+});
+
+// Issue #37, against the real library: a CANCEL landing while the talk-triggered accept() is
+// still gathering makes SIP.js resolve (not reject) accept(), which used to leave the manager
+// ACTIVE with an empty slot and answer every later INVITE 486.
+describe("CANCEL while the talk-triggered answer is in flight (#37)", () => {
+  it("does not wedge the phone: the next INVITE rings and is never answered 486", async () => {
+    const h = await readyHarness();
+    let openGate!: () => void;
+    FakeSDH.gate = new Promise<void>((r) => (openGate = r));
+
+    const first = serverInvite({ user: "1001", domain: "voice.example.com" });
+    const before = h.transport().sent.length;
+    h.transport().deliver(first.raw);
+    await vi.waitFor(() => expect(h.last().callInProgress).toBe(true));
+    learnClientTag(await h.sentRequest("SIP/2.0 180", before), first.dialog);
+
+    h.transport().deliver(notify(first.dialog, "talk")); // accept() now blocked on the gate
+    await vi.waitFor(() => expect(h.ringing()).toBe(false)); // the answer path has started
+    h.transport().deliver(cancel(first.dialog));
+    await vi.waitFor(() => expect(h.last().callInProgress).toBe(false));
+    openGate(); // accept() settles after the CANCEL won
+    await new Promise((r) => setTimeout(r, 20)); // real timers: let the stale accept() continuation run
+
+    const mark = h.transport().sent.length;
+    const second = serverInvite({ user: "1001", domain: "voice.example.com" });
+    h.transport().deliver(second.raw);
+    // handleInvite rings or rejects synchronously, so once it rings any 486 would already be sent.
+    await vi.waitFor(() => expect(h.ringing()).toBe(true));
+    expect(h.transport().sent.slice(mark).some((m) => m.startsWith("SIP/2.0 180"))).toBe(true);
+    expect(h.transport().sent.slice(mark).some((m) => m.startsWith("SIP/2.0 486"))).toBe(false);
     expect(h.last().callInProgress).toBe(true);
   });
 });
