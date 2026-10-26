@@ -5,6 +5,8 @@ type Modifier = (d: RTCSessionDescriptionInit) => Promise<RTCSessionDescriptionI
 /** Minimal SDH: no WebRTC in Node. Applies modifiers so hold/resume SDP rewriting is observable. */
 export class FakeSDH {
   static created: FakeSDH[] = [];
+  /** When set, getDescription() waits on it — models ICE gathering that outlasts a CANCEL. */
+  static gate: Promise<void> | null = null;
   lastLocalSdp = "";
   peerConnection = undefined; // call-session tolerates a missing peerConnection
 
@@ -16,6 +18,7 @@ export class FakeSDH {
     _options?: unknown,
     modifiers?: Modifier[]
   ): Promise<{ body: string; contentType: string }> {
+    await FakeSDH.gate;
     let desc: RTCSessionDescriptionInit = { type: "offer", sdp: FAKE_SDP };
     for (const m of modifiers ?? []) {
       desc = await m(desc);

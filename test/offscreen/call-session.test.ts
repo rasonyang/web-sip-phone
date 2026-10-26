@@ -431,6 +431,189 @@ describe("RINGING+talk answer ordering (review defect 2)", () => {
   });
 });
 
+// Issue #37: SIP.js resolves (not rejects) an accept() that a CANCEL won the race against — it
+// squelches the error once `isCanceled` — so the continuation after the await used to mark a
+// manager with an empty session slot ACTIVE, and every later INVITE then got 486 forever.
+describe("an answer still in flight when its call is cancelled must not complete (#37)", () => {
+  function deferred() {
+    let resolve!: () => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /** An INVITE whose accept() stays pending until the returned deferred settles. */
+  function pendingAccept() {
+    const inv = makeInvitation();
+    const d = deferred();
+    inv.accept = vi.fn(() => d.promise);
+    return { inv, d };
+  }
+
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("CANCEL during the talk-triggered accept, then accept() resolves: ENDED, never ACTIVE, next INVITE rings", async () => {
+    const mgr = makeManager();
+    const { inv, d } = pendingAccept();
+    mgr.handleInvite(inv);
+    await inv.fireNotify("talk"); // accept() pending, state still RINGING
+    inv.fireState("Terminated"); // caller CANCELs; SIP.js 487s the INVITE
+    expect(mgr.callState()).toBe(CallState.Ended);
+
+    d.resolve();
+    await settle();
+    expect(mgr.callState()).toBe(CallState.Ended);
+    expect(states).not.toContain(CallState.Active);
+
+    // No timer advance: a throttled hidden document never runs the reset timer.
+    const next = makeInvitation();
+    mgr.handleInvite(next);
+    expect(next.rejected).toEqual([]);
+    expect(mgr.callState()).toBe(CallState.Ringing);
+    await vi.advanceTimersByTimeAsync(1100);
+  });
+
+  it("accept() resolving after the reset timer already returned the manager to IDLE leaves it IDLE", async () => {
+    const mgr = makeManager();
+    const { inv, d } = pendingAccept();
+    mgr.handleInvite(inv);
+    await inv.fireNotify("talk");
+    inv.fireState("Terminated");
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(mgr.callState()).toBe(CallState.Idle);
+
+    d.resolve();
+    await settle();
+    expect(mgr.callState()).toBe(CallState.Idle);
+    expect(states).not.toContain(CallState.Active);
+
+    const next = makeInvitation();
+    mgr.handleInvite(next);
+    expect(next.rejected).toEqual([]);
+    expect(mgr.callState()).toBe(CallState.Ringing);
+  });
+
+  it("a stale accept() resolving after a NEW invitation took the slot does not mark the new call ACTIVE", async () => {
+    const mgr = makeManager();
+    const { inv, d } = pendingAccept();
+    mgr.handleInvite(inv);
+    await inv.fireNotify("talk");
+    inv.fireState("Terminated");
+
+    const next = makeInvitation();
+    mgr.handleInvite(next); // lazily drains the ENDED window and takes the slot
+    expect(next.rejected).toEqual([]);
+
+    d.resolve();
+    await settle();
+    expect(mgr.callState()).toBe(CallState.Ringing);
+    expect(states).not.toContain(CallState.Active);
+    expect(next.rejected).toEqual([]);
+  });
+
+  it("a stale accept() rejecting after a NEW invitation took the slot does not fail the new call", async () => {
+    const mgr = makeManager();
+    const { inv, d } = pendingAccept();
+    mgr.handleInvite(inv);
+    await inv.fireNotify("talk");
+    inv.fireState("Terminated");
+
+    const next = makeInvitation();
+    mgr.handleInvite(next);
+
+    d.reject(new Error("487 Request Terminated"));
+    await settle();
+    expect(mgr.callState()).toBe(CallState.Ringing);
+    expect(next.rejected).toEqual([]);
+  });
+
+  it("an auto-answer timer armed for a cancelled call does not answer a later normal inbound call", async () => {
+    autoAnswerDelay = 2;
+    const mgr = makeManager();
+    const first = makeInvitation();
+    mgr.handleInvite(first);
+    await vi.advanceTimersByTimeAsync(500);
+    first.fireState("Terminated"); // DIALING -> FAILED during the answer-after delay
+
+    autoAnswerDelay = undefined;
+    const normal = makeInvitation();
+    mgr.handleInvite(normal);
+    expect(mgr.callState()).toBe(CallState.Ringing);
+
+    await vi.advanceTimersByTimeAsync(2000); // the first call's timer fires now
+    expect(normal.accept).not.toHaveBeenCalled();
+    expect(first.accept).not.toHaveBeenCalled();
+    expect(mgr.callState()).toBe(CallState.Ringing);
+  });
+
+  it("an auto-answer accept() resolving or rejecting after the call was cancelled does not touch the next call", async () => {
+    autoAnswerDelay = 0;
+    const mgr = makeManager();
+    const { inv, d } = pendingAccept();
+    mgr.handleInvite(inv);
+    await vi.advanceTimersByTimeAsync(10); // answer() runs, accept() pending
+    inv.fireState("Terminated");
+
+    autoAnswerDelay = undefined;
+    const next = makeInvitation();
+    mgr.handleInvite(next);
+    d.reject(new Error("487"));
+    await settle();
+    expect(mgr.callState()).toBe(CallState.Ringing);
+  });
+
+  it("backstop: an in-progress state with an empty slot is reset on the next INVITE instead of answered 486", async () => {
+    const mgr = makeManager();
+    // The fixes above close every public path into this shape, so reach it directly.
+    const internals = mgr as unknown as { state: CallState; session: InvitationLike | null };
+    internals.state = CallState.Active;
+    internals.session = null;
+
+    const next = makeInvitation();
+    mgr.handleInvite(next);
+    expect(next.rejected).toEqual([]);
+    expect(mgr.callState()).toBe(CallState.Ringing);
+  });
+
+  it("soak: 20 mixed rounds, every following INVITE rings and is never rejected", async () => {
+    const mgr = makeManager();
+    for (let i = 0; i < 20; i++) {
+      const { inv, d } = pendingAccept();
+      mgr.handleInvite(inv);
+      expect(inv.rejected, `round ${i}`).toEqual([]);
+      expect(mgr.callState(), `round ${i}`).toBe(CallState.Ringing);
+
+      const kind = i % 3;
+      if (kind === 0) {
+        inv.fireState("Terminated"); // (i) cancelled while ringing
+      } else if (kind === 1) {
+        await inv.fireNotify("talk"); // (ii) cancelled while the answer is in flight
+        inv.fireState("Terminated");
+        d.resolve();
+        await settle();
+      } else {
+        d.resolve();
+        await inv.fireNotify("talk"); // (iii) answered, then ended by BYE
+        expect(mgr.callState(), `round ${i}`).toBe(CallState.Active);
+        inv.fireState("Terminated");
+      }
+      // Every other round lets the reset timer run; the rest model a throttled document.
+      if (i % 2 === 0) {
+        await vi.advanceTimersByTimeAsync(1100);
+      }
+    }
+    const last = makeInvitation();
+    mgr.handleInvite(last);
+    expect(last.rejected).toEqual([]);
+    expect(mgr.callState()).toBe(CallState.Ringing);
+  });
+});
+
 describe("media wiring dedup (review defect 3)", () => {
   it("registers iceconnectionstatechange exactly once across auto-answer accept() and Established", async () => {
     autoAnswerDelay = 0;
