@@ -78,8 +78,9 @@ describe("normal inbound calls", () => {
 });
 
 // Issue #37, against the real library: a CANCEL landing while the talk-triggered accept() is
-// still gathering makes SIP.js resolve (not reject) accept(), which used to leave the manager
-// ACTIVE with an empty slot and answer every later INVITE 486.
+// still gathering used to make SIP.js resolve accept(), which left the manager ACTIVE with an
+// empty slot and answered every later INVITE 486. Since rasonyang/SIP.js#1 accept() rejects and
+// no 200 is sent.
 describe("CANCEL while the talk-triggered answer is in flight (#37)", () => {
   it("does not wedge the phone: the next INVITE rings and is never answered 486", async () => {
     const h = await readyHarness();
@@ -98,6 +99,11 @@ describe("CANCEL while the talk-triggered answer is in flight (#37)", () => {
     await vi.waitFor(() => expect(h.last().callInProgress).toBe(false));
     openGate(); // accept() settles after the CANCEL won
     await new Promise((r) => setTimeout(r, 20)); // real timers: let the stale accept() continuation run
+
+    // No 2xx for the INVITE (200s to the NOTIFY and the CANCEL are fine).
+    expect(
+      h.transport().sent.slice(before).some((m) => m.startsWith("SIP/2.0 200") && /^CSeq: \d+ INVITE/m.test(m))
+    ).toBe(false);
 
     const mark = h.transport().sent.length;
     const second = serverInvite({ user: "1001", domain: "voice.example.com" });

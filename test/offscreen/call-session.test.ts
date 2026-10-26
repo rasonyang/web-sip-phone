@@ -431,9 +431,10 @@ describe("RINGING+talk answer ordering (review defect 2)", () => {
   });
 });
 
-// Issue #37: SIP.js resolves (not rejects) an accept() that a CANCEL won the race against — it
-// squelches the error once `isCanceled` — so the continuation after the await used to mark a
-// manager with an empty session slot ACTIVE, and every later INVITE then got 486 forever.
+// Issue #37: SIP.js used to resolve (not reject) an accept() that a CANCEL won the race against,
+// so the continuation after the await marked a manager with an empty session slot ACTIVE and
+// every later INVITE got 486 forever. Since rasonyang/SIP.js#1 it rejects with
+// SessionTerminatedError; the resolve tests below guard the old behaviour and any resolve path.
 describe("an answer still in flight when its call is cancelled must not complete (#37)", () => {
   function deferred() {
     let resolve!: () => void;
@@ -469,6 +470,28 @@ describe("an answer still in flight when its call is cancelled must not complete
     await settle();
     expect(mgr.callState()).toBe(CallState.Ended);
     expect(states).not.toContain(CallState.Active);
+
+    // No timer advance: a throttled hidden document never runs the reset timer.
+    const next = makeInvitation();
+    mgr.handleInvite(next);
+    expect(next.rejected).toEqual([]);
+    expect(mgr.callState()).toBe(CallState.Ringing);
+    await vi.advanceTimersByTimeAsync(1100);
+  });
+
+  it("CANCEL during the talk-triggered accept, then accept() rejects: ENDED, no FAIL, never ACTIVE, next INVITE rings", async () => {
+    const mgr = makeManager();
+    const { inv, d } = pendingAccept();
+    mgr.handleInvite(inv);
+    await inv.fireNotify("talk");
+    inv.fireState("Terminated");
+    expect(mgr.callState()).toBe(CallState.Ended);
+
+    d.reject(new Error("SessionTerminatedError"));
+    await settle();
+    expect(mgr.callState()).toBe(CallState.Ended);
+    expect(states).not.toContain(CallState.Active);
+    expect(states).not.toContain(CallState.Failed);
 
     // No timer advance: a throttled hidden document never runs the reset timer.
     const next = makeInvitation();
